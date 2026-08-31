@@ -10,6 +10,7 @@ describe("DSH manifest contract", () => {
 
     expect(manifest).toMatchObject({
       id: "dsh-coding-workspace",
+      name: "Coding工作站",
       type: "sidecar",
       host: { apiVersion: 3 },
     });
@@ -48,6 +49,9 @@ describe("DSH manifest contract", () => {
     });
     expect(manifest.contributions).toContainEqual(
       expect.objectContaining(DSH_CAPABILITY)
+    );
+    expect(manifest.methods).toContainEqual(
+      expect.objectContaining({ name: "shutdown" })
     );
   });
 });

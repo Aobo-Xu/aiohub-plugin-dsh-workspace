@@ -1,6 +1,6 @@
 {
   "id": "dsh-coding-workspace",
-  "name": "DSH Coding Workspace",
+  "name": "Coding工作站",
   "version": "0.1.0",
   "description": "A managed DSH coding execution domain for AIO Hub.",
   "author": "AIO Hub",
@@ -56,6 +56,12 @@
       "description": "Read a durable DSH session snapshot.",
       "parameters": [],
       "returnType": "Promise<object>"
+    },
+    {
+      "name": "shutdown",
+      "description": "Gracefully stop the DSH execution domain for the supplied lifecycle reason.",
+      "parameters": [],
+      "returnType": "Promise<void>"
     }
   ],
   "settingsSchema": {
