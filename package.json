@@ -12,8 +12,9 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "bun run check:types && bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "check": "bun run check:types && bun run check:generated-types && bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "check:types": "tsc --project tsconfig.json",
+    "check:generated-types": "tsc --project tsconfig.generated.json",
     "test": "vitest run && cargo test --workspace",
     "build": "bun run generate:protocol && cargo build --workspace --release",
     "generate:protocol": "cargo run -p aio-dsh-protocol --bin generate --",

@@ -3,9 +3,10 @@ use std::fs;
 
 use aio_dsh_protocol::{
     CONTRACT_HASH, CommandPayload, CompatibilityIssue, Endpoint, Envelope, InitializeRequest,
-    InteractionPayload, InteractionResolutionReason, InteractionResolved, NotificationPayload,
-    OverloadNotification, PlatformFacts, PlatformKey, PongResult, ProtocolError, ProtocolVersion,
-    ResponsePayload, RuntimeProvenance, SandboxLevel, SandboxStatus, negotiate_initialize,
+    InteractionKind, InteractionPayload, InteractionRequest, InteractionResolutionReason,
+    InteractionResolved, NotificationPayload, OverloadNotification, PlatformFacts, PlatformKey,
+    PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, SandboxLevel,
+    SandboxStatus, negotiate_initialize,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -93,6 +94,88 @@ fn initialize_request_rejects_unknown_contract_fields() {
         .insert("unexpected".to_owned(), json!(true));
 
     assert!(serde_json::from_value::<InitializeRequest>(value).is_err());
+}
+
+#[test]
+fn tagged_payloads_reject_unknown_outer_and_inline_fields() {
+    assert!(
+        serde_json::from_value::<CommandPayload>(json!({ "kind": "ping", "unexpected": true }))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ResponsePayload>(json!({
+            "kind": "pong",
+            "data": { "seq": 1 },
+            "unexpected": true
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<NotificationPayload>(json!({
+            "kind": "state",
+            "data": { "state": "ready" },
+            "unexpected": true
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<InteractionPayload>(json!({
+            "kind": "resolved",
+            "data": {
+                "domainGenerationId": "generation-1",
+                "contractHash": CONTRACT_HASH,
+                "sessionId": "session-1",
+                "correlationId": "interaction-1",
+                "reason": "answered"
+            },
+            "unexpected": true
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<CommandPayload>(json!({
+            "kind": "session",
+            "data": {
+                "kind": "snapshot",
+                "data": { "sessionId": "session-1" },
+                "unexpected": true
+            }
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ProtocolError>(json!({
+            "kind": "incompatible-contract",
+            "data": { "issues": [], "unexpected": true }
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<CompatibilityIssue>(json!({
+            "kind": "major-version",
+            "data": { "local": 1, "remote": 1, "unexpected": true }
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn explicitly_open_value_payloads_keep_unknown_business_fields() {
+    let request = serde_json::from_value::<InteractionRequest>(json!({
+        "domainGenerationId": "generation-1",
+        "contractHash": CONTRACT_HASH,
+        "sessionId": "session-1",
+        "correlationId": "interaction-1",
+        "kind": "question",
+        "data": { "futureBusinessField": { "nested": true } }
+    }))
+    .expect("open interaction data remains extensible");
+
+    assert_eq!(request.kind, InteractionKind::Question);
+    assert_eq!(
+        request.data,
+        json!({ "futureBusinessField": { "nested": true } })
+    );
 }
 
 #[test]
@@ -191,7 +274,23 @@ fn negotiation_enables_mutual_stable_and_explicit_experimental_intersection() {
 }
 
 #[test]
-fn negotiation_rejects_version_hash_and_required_stable_incompatibilities() {
+fn negotiation_accepts_same_major_minor_versions_in_both_argument_orders() {
+    let older = initialize_request(&["session", "snapshot"], &["session"], &["trace"]);
+    let mut newer = older.clone();
+    newer.protocol_version.minor = 2;
+
+    let forward = negotiate_initialize(&older, &newer).expect("older local accepts newer remote");
+    let reverse = negotiate_initialize(&newer, &older).expect("newer local accepts older remote");
+
+    assert_eq!(
+        forward.protocol_version,
+        ProtocolVersion { major: 1, minor: 0 }
+    );
+    assert_eq!(reverse.protocol_version, forward.protocol_version);
+}
+
+#[test]
+fn negotiation_rejects_major_hash_and_required_stable_incompatibilities() {
     struct Case {
         name: &'static str,
         local: InitializeRequest,
@@ -202,8 +301,6 @@ fn negotiation_rejects_version_hash_and_required_stable_incompatibilities() {
     let compatible = initialize_request(&["session", "snapshot"], &["session"], &[]);
     let mut major = compatible.clone();
     major.protocol_version.major = 2;
-    let mut minor = compatible.clone();
-    minor.protocol_version.minor = 1;
     let mut hash = compatible.clone();
     hash.contract_hash = "f".repeat(64);
     let local_requires_missing =
@@ -219,15 +316,6 @@ fn negotiation_rejects_version_hash_and_required_stable_incompatibilities() {
             expected_issue: CompatibilityIssue::MajorVersion {
                 local: 1,
                 remote: 2,
-            },
-        },
-        Case {
-            name: "minor version",
-            local: compatible.clone(),
-            remote: minor,
-            expected_issue: CompatibilityIssue::MinorVersion {
-                local: 0,
-                remote: 1,
             },
         },
         Case {
@@ -328,6 +416,26 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
             "missing schema definition {required}"
         );
     }
+    for envelope in [
+        "CommandEnvelope",
+        "InteractionEnvelope",
+        "NotificationEnvelope",
+        "ResponseEnvelope",
+    ] {
+        assert_eq!(
+            definitions[envelope]["type"],
+            json!("object"),
+            "{envelope} must carry its concrete object schema"
+        );
+    }
+    assert!(
+        names.iter().all(|name| {
+            name.strip_prefix("Envelope").is_none_or(|suffix| {
+                suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit())
+            })
+        }),
+        "numbered envelope definitions leaked into schema: {names:?}"
+    );
     assert_eq!(
         schema["required"],
         json!(["command", "interaction", "notification", "response"])
@@ -339,13 +447,13 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
     ))
     .expect("read generated TypeScript declarations");
     for fragment in [
-        "export type CommandEnvelope =",
+        "export type CommandEnvelope = {",
         "export type CommandPayload =",
-        "export type ResponseEnvelope =",
+        "export type ResponseEnvelope = {",
         "export type ResponsePayload =",
-        "export type NotificationEnvelope =",
+        "export type NotificationEnvelope = {",
         "export type NotificationPayload =",
-        "export type InteractionEnvelope =",
+        "export type InteractionEnvelope = {",
         "export type InteractionPayload =",
         "protocolVersion:",
         "domainGenerationId:",
@@ -356,6 +464,45 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
         assert!(
             declarations.contains(fragment),
             "missing TypeScript declaration fragment {fragment:?}"
+        );
+    }
+    for unstable in ["Envelope2", "Envelope3", "Envelope4"] {
+        assert!(
+            !declarations.contains(unstable),
+            "unstable TypeScript definition {unstable} leaked"
+        );
+    }
+
+    let tagged_schema = |definition: &str, kind: &str| {
+        definitions[definition]["oneOf"]
+            .as_array()
+            .expect("tagged enum variants")
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == json!(kind))
+            .unwrap_or_else(|| panic!("missing {definition} variant {kind}"))
+    };
+    for (definition, kind) in [
+        ("CommandPayload", "ping"),
+        ("SessionCommand", "snapshot"),
+        ("ProtocolError", "incompatible-contract"),
+        ("CompatibilityIssue", "major-version"),
+    ] {
+        let variant = tagged_schema(definition, kind);
+        assert_eq!(
+            variant["additionalProperties"],
+            json!(false),
+            "{definition}/{kind} outer object must reject unknown fields"
+        );
+    }
+    for (definition, kind) in [
+        ("ProtocolError", "incompatible-contract"),
+        ("CompatibilityIssue", "major-version"),
+    ] {
+        let data = &tagged_schema(definition, kind)["properties"]["data"];
+        assert_eq!(
+            data["additionalProperties"],
+            json!(false),
+            "{definition}/{kind} data object must reject unknown fields"
         );
     }
 }

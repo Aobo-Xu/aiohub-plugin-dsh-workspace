@@ -1,6 +1,7 @@
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::CONTRACT_HASH;
@@ -47,7 +48,12 @@ impl<T> Envelope<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum CommandPayload {
     Initialize(InitializeRequest),
     Ping,
@@ -57,7 +63,12 @@ pub enum CommandPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum ResponsePayload {
     Initialize(InitializeResult),
     Pong(PongResult),
@@ -67,7 +78,12 @@ pub enum ResponsePayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum NotificationPayload {
     State(RuntimeStateNotification),
     Session(SessionNotification),
@@ -78,7 +94,12 @@ pub enum NotificationPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum InteractionPayload {
     Request(InteractionRequest),
     Response(InteractionResponse),
@@ -165,13 +186,6 @@ pub fn negotiate_initialize(
             remote: remote.protocol_version.major,
         });
     }
-    // Minor versions remain exact until the protocol models versioned capability ranges.
-    if local.protocol_version.minor != remote.protocol_version.minor {
-        issues.push(CompatibilityIssue::MinorVersion {
-            local: local.protocol_version.minor,
-            remote: remote.protocol_version.minor,
-        });
-    }
     if local.contract_hash != remote.contract_hash {
         issues.push(CompatibilityIssue::ContractHash {
             local: local.contract_hash.clone(),
@@ -209,7 +223,13 @@ pub fn negotiate_initialize(
         remote.experimental_capabilities.iter().cloned().collect();
 
     Ok(InitializeResult {
-        protocol_version: local.protocol_version.clone(),
+        protocol_version: ProtocolVersion {
+            major: local.protocol_version.major,
+            minor: local
+                .protocol_version
+                .minor
+                .min(remote.protocol_version.minor),
+        },
         contract_hash: local.contract_hash.clone(),
         runtime: local.runtime.clone(),
         platform: local.platform.clone(),
@@ -222,20 +242,26 @@ pub fn negotiate_initialize(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, thiserror::Error)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum ProtocolError {
     #[error("incompatible protocol contract")]
     IncompatibleContract { issues: Vec<CompatibilityIssue> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum CompatibilityIssue {
     MajorVersion {
-        local: u16,
-        remote: u16,
-    },
-    MinorVersion {
         local: u16,
         remote: u16,
     },
@@ -283,7 +309,12 @@ pub struct PongResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum SessionCommand {
     Acquire(AcquireSessionRequest),
     TransferController(TransferControllerRequest),
@@ -361,7 +392,12 @@ pub struct ControllerLease {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum SessionResult {
     Lease(ControllerLease),
     Snapshot(SessionSnapshot),
@@ -397,7 +433,12 @@ pub struct RuntimeEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "data", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum SessionNotification {
     Event(RuntimeEvent),
     Snapshot(SessionSnapshot),
@@ -497,25 +538,48 @@ pub struct ResyncNotification {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-#[schemars(rename = "CommandEnvelope", title = "CommandEnvelope")]
 pub struct CommandEnvelope(pub Envelope<CommandPayload>);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-#[schemars(rename = "InteractionEnvelope", title = "InteractionEnvelope")]
 pub struct InteractionEnvelope(pub Envelope<InteractionPayload>);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-#[schemars(rename = "NotificationEnvelope", title = "NotificationEnvelope")]
 pub struct NotificationEnvelope(pub Envelope<NotificationPayload>);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-#[schemars(rename = "ResponseEnvelope", title = "ResponseEnvelope")]
 pub struct ResponseEnvelope(pub Envelope<ResponsePayload>);
+
+macro_rules! concrete_envelope_schema {
+    ($envelope:ty, $payload:ty, $name:literal) => {
+        impl JsonSchema for $envelope {
+            fn schema_name() -> Cow<'static, str> {
+                Cow::Borrowed($name)
+            }
+
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                <Envelope<$payload> as JsonSchema>::json_schema(generator)
+            }
+        }
+    };
+}
+
+concrete_envelope_schema!(CommandEnvelope, CommandPayload, "CommandEnvelope");
+concrete_envelope_schema!(
+    InteractionEnvelope,
+    InteractionPayload,
+    "InteractionEnvelope"
+);
+concrete_envelope_schema!(
+    NotificationEnvelope,
+    NotificationPayload,
+    "NotificationEnvelope"
+);
+concrete_envelope_schema!(ResponseEnvelope, ResponsePayload, "ResponseEnvelope");
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
