@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+dist/
+target/
+dev-bin/
+artifacts/
+runtime-cache/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
