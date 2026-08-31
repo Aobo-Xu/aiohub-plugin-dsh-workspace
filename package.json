@@ -12,12 +12,12 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "check": "bun run check:types && bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "check:types": "tsc --project tsconfig.json",
     "test": "vitest run && cargo test --workspace",
     "build": "bun run generate:protocol && cargo build --workspace --release",
-    "generate:protocol": "bun -e \"console.error('DSH_PROTOCOL_TASK_3_PENDING'); process.exit(1)\"",
-    "check:generated": "bun -e \"console.error('DSH_PROTOCOL_TASK_3_PENDING'); process.exit(1)\"",
+    "generate:protocol": "cargo run -p aio-dsh-protocol --bin generate --",
+    "check:generated": "cargo run -p aio-dsh-protocol --bin generate -- --check",
     "runtime:resolve-current": "bun -e \"console.error('DSH_RUNTIME_TASK_5_PENDING'); process.exit(1)\"",
     "package:platform": "bun -e \"console.error('DSH_PLATFORM_PACKAGE_TASK_14_PENDING'); process.exit(1)\"",
     "build:dsh-source": "bun -e \"console.error('DSH_RUNTIME_TASK_5_PENDING: pnpm 11.7.0, Python 3.10'); process.exit(1)\""
