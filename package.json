@@ -12,11 +12,11 @@
     "check": "bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "test": "vitest run && cargo test --workspace",
     "build": "bun run generate:protocol && cargo build --workspace --release",
-    "generate:protocol": "bun scripts/generate-protocol.ts",
-    "check:generated": "bun scripts/check-generated.ts",
-    "runtime:resolve-current": "bun scripts/runtime/resolve-runtime.ts",
-    "package:platform": "bun scripts/package-platform.ts",
-    "build:dsh-source": "bun scripts/runtime/build-from-source.ts --pnpm 11.7.0 --python 3.10"
+    "generate:protocol": "bun -e \"console.error('DSH_PROTOCOL_TASK_3_PENDING'); process.exit(1)\"",
+    "check:generated": "bun -e \"console.error('DSH_PROTOCOL_TASK_3_PENDING'); process.exit(1)\"",
+    "runtime:resolve-current": "bun -e \"console.error('DSH_RUNTIME_TASK_5_PENDING'); process.exit(1)\"",
+    "package:platform": "bun -e \"console.error('DSH_PLATFORM_PACKAGE_TASK_14_PENDING'); process.exit(1)\"",
+    "build:dsh-source": "bun -e \"console.error('DSH_RUNTIME_TASK_5_PENDING: pnpm 11.7.0, Python 3.10'); process.exit(1)\""
   },
   "devDependencies": {
     "vitest": "^4.1.8"
