@@ -1,0 +1,84 @@
+{
+  "id": "dsh-coding-workspace",
+  "name": "DSH Coding Workspace",
+  "version": "0.1.0",
+  "description": "A managed DSH coding execution domain for AIO Hub.",
+  "author": "AIO Hub",
+  "host": {
+    "appVersion": ">=0.7.0-alpha.4",
+    "apiVersion": 3,
+    "platforms": [
+      "win32-x64",
+      "linux-x64",
+      "darwin-arm64",
+      "linux-arm64"
+    ]
+  },
+  "type": "sidecar",
+  "sidecar": {
+    "executable": {
+      "win32-x64": "bin/win32-x64/aio-dsh-supervisor.exe",
+      "linux-x64": "bin/linux-x64/aio-dsh-supervisor",
+      "darwin-arm64": "bin/darwin-arm64/aio-dsh-supervisor",
+      "linux-arm64": "bin/linux-arm64/aio-dsh-supervisor"
+    },
+    "resident": true,
+    "startupMethod": "initialize",
+    "startupParams": {}
+  },
+  "methods": [
+    {
+      "name": "initialize",
+      "description": "Negotiate and initialize the DSH execution domain.",
+      "parameters": [],
+      "returnType": "Promise<object>"
+    },
+    {
+      "name": "acquireSession",
+      "description": "Acquire a controller or observer lease for a DSH session.",
+      "parameters": [],
+      "returnType": "Promise<object>"
+    },
+    {
+      "name": "transferController",
+      "description": "Transfer a DSH session controller lease to another view.",
+      "parameters": [],
+      "returnType": "Promise<object>"
+    },
+    {
+      "name": "command",
+      "description": "Execute a DSH runtime command with a valid controller lease.",
+      "parameters": [],
+      "returnType": "Promise<object>"
+    },
+    {
+      "name": "snapshot",
+      "description": "Read a durable DSH session snapshot.",
+      "parameters": [],
+      "returnType": "Promise<object>"
+    }
+  ],
+  "settingsSchema": {
+    "version": "1.0",
+    "properties": {
+      "prewarm": {
+        "type": "boolean",
+        "default": false,
+        "label": "Prewarm runtime"
+      },
+      "idleGraceSeconds": {
+        "type": "number",
+        "default": 600,
+        "label": "Idle grace period"
+      }
+    }
+  },
+  "contributions": [
+    {
+      "type": "capability",
+      "id": "execution-domain:dsh",
+      "version": 1,
+      "stability": "stable"
+    }
+  ]
+}

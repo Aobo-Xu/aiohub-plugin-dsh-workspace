@@ -1,0 +1,11 @@
+{
+  "name": "@aiohub/dsh-runtime-facade",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./types": "./src/types.ts",
+    "./runtime-facade": "./src/runtime-facade.ts",
+    "./aio-sidecar-transport": "./src/aio-sidecar-transport.ts"
+  }
+}
