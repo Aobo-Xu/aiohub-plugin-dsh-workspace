@@ -81,18 +81,20 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
   public async shutdown(
     reason: "plugin-disabled" | "aio-exit" | "user-stop"
   ): Promise<void> {
+    let gracefulFailed = false;
     let gracefulError: unknown;
 
     try {
       await this.transport.request("shutdown", { reason });
     } catch (error) {
+      gracefulFailed = true;
       gracefulError = error;
     }
 
     try {
       await this.transport.kill();
     } catch (killError) {
-      if (gracefulError !== undefined) {
+      if (gracefulFailed) {
         throw new AggregateError(
           [gracefulError, killError],
           "DSH graceful shutdown and Sidecar disable both failed."
@@ -101,7 +103,7 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
       throw killError;
     }
 
-    if (gracefulError !== undefined) {
+    if (gracefulFailed) {
       throw gracefulError;
     }
   }

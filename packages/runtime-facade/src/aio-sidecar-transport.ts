@@ -8,14 +8,13 @@ export interface AioPluginProxy {
     eventName: string,
     callback: (data: unknown) => void
   ) => () => void;
-  [method: string]: unknown;
 }
 
 export class AioSidecarTransport implements SidecarTransport {
   public constructor(private readonly plugin: AioPluginProxy) {}
 
   public async request<T>(method: string, params: unknown): Promise<T> {
-    const candidate = this.plugin[method];
+    const candidate = Reflect.get(this.plugin, method);
     if (typeof candidate !== "function") {
       throw new Error(`AIO PluginProxy does not expose Sidecar method ${method}.`);
     }

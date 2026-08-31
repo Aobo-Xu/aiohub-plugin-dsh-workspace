@@ -74,7 +74,7 @@ describe("AioSidecarTransport public PluginProxy seam", () => {
       disable: vi.fn().mockResolvedValue(undefined),
       onSidecarEvent: vi.fn(() => unsubscribe),
     };
-    const transport = new AioSidecarTransport(proxy as never);
+    const transport = new AioSidecarTransport(proxy);
 
     await expect(
       transport.request("initialize", { hostApiVersion: 3 })
@@ -85,7 +85,7 @@ describe("AioSidecarTransport public PluginProxy seam", () => {
     const transport = new AioSidecarTransport({
       disable: vi.fn().mockResolvedValue(undefined),
       onSidecarEvent: vi.fn(),
-    } as never);
+    });
 
     await expect(transport.request("initialize", {})).rejects.toThrow(
       "does not expose Sidecar method initialize"
@@ -105,7 +105,7 @@ describe("AioSidecarTransport public PluginProxy seam", () => {
         }
       ),
     };
-    const transport = new AioSidecarTransport(proxy as never);
+    const transport = new AioSidecarTransport(proxy);
     const listener = vi.fn();
 
     const stop = transport.onEvent(listener);
@@ -209,5 +209,32 @@ describe("SidecarRuntimeFacade validation and lifecycle", () => {
       "graceful shutdown failed"
     );
     expect(transport.kill).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an undefined graceful shutdown rejection after kill succeeds", async () => {
+    const transport = createTransport(undefined);
+    transport.request.mockRejectedValueOnce(undefined);
+    const facade = new SidecarRuntimeFacade(transport);
+
+    await expect(facade.shutdown("aio-exit")).rejects.toBeUndefined();
+    expect(transport.kill).toHaveBeenCalledOnce();
+  });
+
+  it("aggregates undefined graceful and kill failures", async () => {
+    const transport = createTransport(undefined);
+    const killError = new Error("outer disable failed");
+    transport.request.mockRejectedValueOnce(undefined);
+    transport.kill.mockRejectedValueOnce(killError);
+    const facade = new SidecarRuntimeFacade(transport);
+
+    let failure: unknown;
+    try {
+      await facade.shutdown("plugin-disabled");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([undefined, killError]);
   });
 });
