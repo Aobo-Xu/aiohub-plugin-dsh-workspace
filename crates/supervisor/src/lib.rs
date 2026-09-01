@@ -17,7 +17,7 @@ pub use credentials::Credentials;
 pub use home::{DshHomeLayout, HomeMode};
 pub use lease::Lease;
 pub use lifecycle::Lifecycle;
-pub use process::{ProcessBackend, ProcessPolicy};
+pub use process::{ManagedProcess, ProcessBackend, ProcessExit, ProcessPolicy, SpawnSpec};
 pub use recovery::Recovery;
 pub use runtime::{PlatformTarget, RuntimeValidator};
 pub use sandbox_status::SandboxStatus;

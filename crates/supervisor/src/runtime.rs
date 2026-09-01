@@ -130,8 +130,12 @@ impl ValidatedRuntime {
         }
     }
 
-    pub fn validate_layout(&self, files: &[&str]) -> Result<(), RuntimeValidationError> {
-        validate_path_shapes(files)
+    pub fn validate_layout(
+        &self,
+        runtime_root: &Path,
+        files: &[&str],
+    ) -> Result<(), RuntimeValidationError> {
+        validate_layout_against_root(runtime_root, files)
     }
 }
 
@@ -202,18 +206,6 @@ impl RuntimeValidator {
 
         Ok(ValidatedRuntime { platform })
     }
-
-    pub fn validate_layout(files: &[&str]) -> Result<(), RuntimeValidationError> {
-        validate_path_shapes(files)?;
-        for file in files {
-            if !Path::new(file).exists() {
-                return Err(RuntimeValidationError::Lock(format!(
-                    "runtime file missing: {file}"
-                )));
-            }
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -230,22 +222,29 @@ impl std::str::FromStr for Spdx {
     }
 }
 
-fn validate_path_shapes(files: &[&str]) -> Result<(), RuntimeValidationError> {
+fn validate_layout_against_root(
+    runtime_root: &Path,
+    files: &[&str],
+) -> Result<(), RuntimeValidationError> {
+    let canonical_root = runtime_root.canonicalize()?;
     for &file in files {
-        let path = Path::new(file);
-        let mut depth = 0usize;
-        for component in path.components() {
-            match component {
-                Component::Normal(_) => depth += 1,
-                Component::ParentDir if depth == 0 => {
-                    return Err(RuntimeValidationError::PathEscape(file.to_owned()));
-                }
-                Component::ParentDir => depth -= 1,
-                Component::Prefix(_) | Component::RootDir => {
-                    return Err(RuntimeValidationError::PathEscape(file.to_owned()));
-                }
-                Component::CurDir => {}
-            }
+        let relative = Path::new(file);
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(RuntimeValidationError::PathEscape(file.to_owned()));
+        }
+
+        let candidate = canonical_root.join(relative);
+        let canonical = candidate.canonicalize()?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(RuntimeValidationError::PathEscape(file.to_owned()));
+        }
+        if !canonical.is_file() {
+            return Err(RuntimeValidationError::Lock(format!(
+                "runtime file missing: {file}"
+            )));
         }
     }
     Ok(())

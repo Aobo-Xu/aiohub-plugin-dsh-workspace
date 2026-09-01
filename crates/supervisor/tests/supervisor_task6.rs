@@ -162,6 +162,10 @@ fn config(data_dir: &Path, lock_path: &Path) -> SupervisorConfig {
     SupervisorConfig {
         plugin_data_dir: data_dir.to_owned(),
         runtime_lock_path: lock_path.to_owned(),
+        runtime_root: lock_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("runtime-root"),
         platform: PlatformTarget::Win32X64,
         host_api_version: 3,
         prewarm: false,
@@ -207,7 +211,13 @@ fn runtime_validator_rejects_runtime_layout_that_escapes_its_root() {
     let lock = write_lock(root.path(), &lock_builder());
     let validated =
         RuntimeValidator::validate(&lock, PlatformTarget::Win32X64).expect("validate lock");
-    assert!(validated.validate_layout(&["..\\runtime.exe"]).is_err());
+    let runtime_root = root.path().join("runtime-root");
+    fs::create_dir_all(&runtime_root).expect("create runtime root");
+    assert!(
+        validated
+            .validate_layout(&runtime_root, &["..\\runtime.exe"])
+            .is_err()
+    );
 }
 
 #[test]
@@ -295,7 +305,7 @@ fn supervisor_output_is_stdout_pure_json_lines() {
     let root = TempRoot::new("stdout");
     let data_dir = root.path().join("data");
     let lock = write_lock(root.path(), &lock_builder());
-    let supervisor = Supervisor::new(config(&data_dir, &lock));
+    let supervisor = Supervisor::new(config(&data_dir, &lock)).expect("create supervisor");
 
     let mut input = Cursor::new(Vec::new());
     let mut output = Vec::new();
@@ -325,7 +335,7 @@ fn initialize_command_responds_to_compatible_client() {
     let root = TempRoot::new("initialize");
     let data_dir = root.path().join("data");
     let lock = write_lock(root.path(), &lock_builder());
-    let supervisor = Supervisor::new(config(&data_dir, &lock));
+    let supervisor = Supervisor::new(config(&data_dir, &lock)).expect("create supervisor");
 
     let result = supervisor
         .initialize(&initialize_request(
@@ -340,10 +350,11 @@ fn initialize_transaction_rolls_back_home_on_late_failure() {
     let root = TempRoot::new("rollback");
     let data_dir = root.path().join("data");
     let lock = write_lock(root.path(), &lock_builder());
-    let supervisor = Supervisor::new(config(&data_dir, &lock));
+    let supervisor = Supervisor::new(config(&data_dir, &lock)).expect("create supervisor");
 
     let flags = StartupFlags {
         fail_at_credentials: true,
+        ..StartupFlags::default()
     };
     assert!(supervisor.startup_transaction(&flags).is_err());
     assert!(
@@ -357,7 +368,7 @@ fn fail_closed_stubs_are_loadable_and_reject_use() {
     let root = TempRoot::new("stubs");
     let data_dir = root.path().join("data");
     let lock = write_lock(root.path(), &lock_builder());
-    let supervisor = Supervisor::new(config(&data_dir, &lock));
+    let supervisor = Supervisor::new(config(&data_dir, &lock)).expect("create supervisor");
 
     assert!(supervisor.validate_client(ClientValidation).is_ok());
     assert!(supervisor.secret_value("value").is_err());

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use aio_dsh_protocol::{
     CommandEnvelope, CommandPayload, Envelope, InitializeRequest, InitializeResult, PongResult,
@@ -9,14 +10,17 @@ use aio_dsh_protocol::{
 use thiserror::Error;
 
 use crate::home::{DshHomeLayout, HomeError};
-use crate::process::ProcessBackend;
+use crate::process::{ManagedProcess, ProcessBackend, ProcessPolicy, SpawnSpec};
 use crate::runtime::{DSH_CONTRACT_HASH, PlatformTarget, RuntimeValidationError, RuntimeValidator};
 
 const SUPERVISOR_CAPABILITIES: &[&str] = &["session", "snapshot"];
+const SUPPORTED_HOST_API_VERSION: u16 = 3;
 
+#[derive(Clone)]
 pub struct SupervisorConfig {
     pub plugin_data_dir: PathBuf,
     pub runtime_lock_path: PathBuf,
+    pub runtime_root: PathBuf,
     pub platform: PlatformTarget,
     pub host_api_version: u16,
     pub prewarm: bool,
@@ -132,8 +136,9 @@ impl ClientValidation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupervisorOwner {
+    #[default]
     Stopped,
     Starting,
     Ready,
@@ -146,6 +151,9 @@ pub enum SupervisorOwner {
 #[derive(Default, Debug, Clone)]
 pub struct StartupFlags {
     pub fail_at_credentials: bool,
+    pub fail_at_child_settlement: bool,
+    pub fail_at_protocol: bool,
+    pub child: Option<SpawnSpec>,
 }
 
 #[derive(Debug, Error)]
@@ -160,26 +168,50 @@ pub enum SupervisorError {
     Frame(String),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+    #[error("supervisor configuration invalid: {0}")]
+    Config(String),
+    #[error("supervisor state poisoned")]
+    StatePoisoned,
     #[error("initialization failed at step {step}")]
     Startup { step: &'static str },
 }
 
 pub struct Supervisor {
     config: SupervisorConfig,
-    _backend: ProcessBackend,
+    backend: ProcessBackend,
+    state: Mutex<SupervisorState>,
+}
+
+#[derive(Default)]
+struct SupervisorState {
+    owner: SupervisorOwner,
+    home: Option<DshHomeLayout>,
+    child: Option<ManagedProcess>,
 }
 
 impl Supervisor {
-    pub fn new(config: SupervisorConfig) -> Self {
-        let backend = ProcessBackend::create().expect("create process backend");
-        Self {
+    pub fn new(config: SupervisorConfig) -> Result<Self, SupervisorError> {
+        Self::validate_config(&config)?;
+        let backend = ProcessBackend::create()?;
+        let supervisor = Self {
             config,
-            _backend: backend,
+            backend,
+            state: Mutex::new(SupervisorState::default()),
+        };
+
+        if supervisor.config.prewarm {
+            supervisor.startup_transaction(&StartupFlags::default())?;
         }
+
+        Ok(supervisor)
     }
 
     pub fn owner(&self) -> SupervisorOwner {
-        SupervisorOwner::Stopped
+        self.state
+            .lock()
+            .map_err(|_| SupervisorError::StatePoisoned)
+            .map(|state| state.owner)
+            .unwrap_or(SupervisorOwner::Unavailable)
     }
 
     pub fn secret_value(&self, _value: &str) -> Result<SecretValue, SupervisorError> {
@@ -199,17 +231,116 @@ impl Supervisor {
         self.startup_transaction(&StartupFlags::default())?;
         let remote = request.clone();
         let local = self.local_initialize_request();
-        Ok(negotiate_initialize(&local, &remote)?)
+        let result = negotiate_initialize(&local, &remote);
+        if result.is_err() {
+            self.rollback_startup()?;
+        }
+        Ok(result?)
     }
 
     pub fn startup_transaction(&self, flags: &StartupFlags) -> Result<(), SupervisorError> {
+        let mut state = self.lock_state()?;
+        state.owner = SupervisorOwner::Starting;
+
+        match self.execute_startup_transaction(flags, &mut state) {
+            Ok(()) => {
+                state.owner = SupervisorOwner::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                state.owner = SupervisorOwner::Stopped;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn validate_runtime_layout(&self, files: &[&str]) -> Result<(), SupervisorError> {
+        let validated =
+            RuntimeValidator::validate(&self.config.runtime_lock_path, self.config.platform)?;
+        validated.validate_layout(&self.config.runtime_root, files)?;
+        Ok(())
+    }
+
+    fn execute_startup_transaction(
+        &self,
+        flags: &StartupFlags,
+        state: &mut SupervisorState,
+    ) -> Result<(), SupervisorError> {
+        Self::validate_config(&self.config)?;
         RuntimeValidator::validate(&self.config.runtime_lock_path, self.config.platform)?;
         let home = DshHomeLayout::create(&self.config.plugin_data_dir)?;
+
         if flags.fail_at_credentials {
             home.remove()?;
             return Err(SupervisorError::Startup {
                 step: "credentials",
             });
+        }
+
+        let mut child = None;
+        if let Some(spec) = flags.child.clone() {
+            child = Some(self.backend.spawn(spec)?);
+        }
+
+        if flags.fail_at_child_settlement {
+            if let Some(process) = child.as_mut() {
+                self.backend
+                    .terminate_tree(process, ProcessPolicy::default().terminate_grace)?;
+            }
+            home.remove()?;
+            return Err(SupervisorError::Startup {
+                step: "child-settlement",
+            });
+        }
+
+        let local = self.local_initialize_request();
+        if flags.fail_at_protocol {
+            if let Some(process) = child.as_mut() {
+                self.backend
+                    .terminate_tree(process, ProcessPolicy::default().terminate_grace)?;
+            }
+            home.remove()?;
+            return Err(SupervisorError::Startup {
+                step: "protocol-initialization",
+            });
+        }
+        negotiate_initialize(&local, &local)?;
+
+        state.home = Some(home);
+        state.child = child;
+        Ok(())
+    }
+
+    fn rollback_startup(&self) -> Result<(), SupervisorError> {
+        let mut state = self.lock_state()?;
+        if let Some(mut child) = state.child.take() {
+            self.backend
+                .terminate_tree(&mut child, ProcessPolicy::default().terminate_grace)?;
+        }
+        if let Some(home) = state.home.take() {
+            home.remove()?;
+        }
+        state.owner = SupervisorOwner::Stopped;
+        Ok(())
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, SupervisorState>, SupervisorError> {
+        self.state
+            .lock()
+            .map_err(|_| SupervisorError::StatePoisoned)
+    }
+
+    fn validate_config(config: &SupervisorConfig) -> Result<(), SupervisorError> {
+        if config.host_api_version != SUPPORTED_HOST_API_VERSION {
+            return Err(SupervisorError::Config(format!(
+                "unsupported host API version {}",
+                config.host_api_version
+            )));
+        }
+        if config.telemetry_enabled {
+            return Err(SupervisorError::Config(
+                "telemetry must remain disabled".to_owned(),
+            ));
         }
         Ok(())
     }

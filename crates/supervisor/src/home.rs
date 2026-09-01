@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -26,7 +27,6 @@ pub struct DshHomeLayout {
     runtime_dir: PathBuf,
     logs_dir: PathBuf,
     temp_dir: PathBuf,
-    mode: HomeMode,
 }
 
 impl DshHomeLayout {
@@ -40,7 +40,6 @@ impl DshHomeLayout {
             runtime_dir: data_dir.join("runtime"),
             logs_dir: data_dir.join("logs"),
             temp_dir: data_dir.join("temp"),
-            mode,
         };
         for entry in layout.entries() {
             fs::create_dir_all(entry)?;
@@ -79,8 +78,24 @@ impl DshHomeLayout {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, bytes)?;
-        apply_file_mode(path, self.mode.secret)?;
+
+        #[cfg(unix)]
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(HomeMode::default().secret)
+                .open(path)?
+        };
+
+        #[cfg(not(unix))]
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+
+        file.write_all(bytes)?;
         Ok(())
     }
 
@@ -109,17 +124,5 @@ fn apply_directory_mode(path: &Path, mode: u32) -> Result<(), HomeError> {
 
 #[cfg(not(unix))]
 fn apply_directory_mode(_path: &Path, _mode: u32) -> Result<(), HomeError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn apply_file_mode(path: &Path, mode: u32) -> Result<(), HomeError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn apply_file_mode(_path: &Path, _mode: u32) -> Result<(), HomeError> {
     Ok(())
 }
