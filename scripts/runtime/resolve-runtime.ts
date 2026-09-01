@@ -102,6 +102,7 @@ export type VerifiedRuntime = {
   license: string;
   contractHash: string;
   runtimeClosure: readonly string[];
+  cyclonedxPath: string;
   nodePkgTarget: string;
   toolchain: RuntimeToolchain;
 };
@@ -218,6 +219,7 @@ export async function resolveRuntime(
     license: lock.licenseResult.spdx,
     contractHash: lock.contractHash,
     runtimeClosure: spec.runtimeClosure,
+    cyclonedxPath: lock.cyclonedxPath,
     nodePkgTarget: spec.nodePkgTarget,
     toolchain: lock.toolchain,
   };

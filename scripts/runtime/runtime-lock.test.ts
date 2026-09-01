@@ -45,10 +45,28 @@ function sha256(content: string): string {
 async function writeRuntimeFixture(root: string): Promise<{
   runtime: string;
   rg: string;
+  sbom: string;
 }> {
   await mkdir(join(root, "bin"), { recursive: true });
+  await mkdir(join(root, "sbom"), { recursive: true });
   const runtimeContent = "runtime-fixture";
   const rgContent = "rg-fixture";
+  const sbomContent = JSON.stringify({
+    bomFormat: "CycloneDX",
+    specVersion: "1.6",
+    metadata: {
+      component: {
+        type: "application",
+        name: "deepseek-harness-runtime",
+        version: "0.1.2-alpha.3",
+        licenses: [{ license: { id: "Apache-2.0" } }],
+        properties: [
+          { name: "aio:runtime-source", value: "project-built-from-official-source" },
+          { name: "aio:contract-hash", value: CONTRACT_HASH },
+        ],
+      },
+    },
+  });
   await writeFile(
     join(root, "bin", "deepseek-harness-sdk-runtime-win-x64.exe"),
     runtimeContent
@@ -57,9 +75,11 @@ async function writeRuntimeFixture(root: string): Promise<{
     join(root, "bin", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
     rgContent
   );
+  await writeFile(join(root, "sbom", "runtime.cdx.json"), sbomContent);
   return {
     runtime: sha256(runtimeContent),
     rg: sha256(rgContent),
+    sbom: sha256(sbomContent),
   };
 }
 
@@ -113,6 +133,11 @@ async function fixtureRuntime(
       sha256: hashes.rg,
       executable: true,
     },
+    {
+      path: "sbom/runtime.cdx.json",
+      sha256: hashes.sbom,
+      executable: false,
+    },
   ];
 
   if (fault === "checksum-mismatch") {
@@ -143,6 +168,7 @@ async function fixtureRuntime(
     contractHash:
       fault === "contract-mismatch" ? "0".repeat(64) : CONTRACT_HASH,
     runtimeClosure: runtimeClosures["win32-x64"],
+    cyclonedxPath: "sbom/runtime.cdx.json",
     nodePkgTarget: "node24-win-x64",
     toolchain: {
       node: "24",
@@ -188,6 +214,17 @@ describe("runtime lock verification", () => {
       source: {
         kind: "project-built-from-official-source",
       },
+    });
+  });
+
+  it("rejects a runtime with a missing CycloneDX SBOM", async () => {
+    const runtime = await fixtureRuntime("valid");
+    roots.push(runtime.root);
+
+    runtime.cyclonedxPath = "sbom/missing.cdx.json";
+
+    await expect(verifyRuntime(runtime)).rejects.toMatchObject({
+      code: "RUNTIME_SBOM_MISSING",
     });
   });
 

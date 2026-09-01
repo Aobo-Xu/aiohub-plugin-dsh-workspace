@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import {
+  DSH_VERSION,
   DSH_COMMIT,
   DSH_CONTRACT_HASH,
   DSH_TAG,
@@ -64,6 +65,7 @@ export async function verifyRuntime(
   verifyArtifactState(runtime);
   await verifyFiles(runtime);
   verifyClosure(runtime);
+  await verifySbom(runtime);
   return runtime;
 }
 
@@ -203,6 +205,83 @@ function verifyClosure(runtime: VerifiedRuntime): void {
   }
 }
 
+async function verifySbom(runtime: VerifiedRuntime): Promise<void> {
+  const absolutePath = resolve(runtime.root, runtime.cyclonedxPath);
+  const relativePath = relative(runtime.root, absolutePath);
+  if (
+    isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith("..")
+  ) {
+    fail(
+      "RUNTIME_SBOM_PATH_TRAVERSAL",
+      `runtime SBOM escapes root: ${runtime.cyclonedxPath}`
+    );
+  }
+
+  if (!runtime.files.some((file) => file.path === runtime.cyclonedxPath)) {
+    fail(
+      "RUNTIME_SBOM_MISSING",
+      `runtime SBOM is not included in the lock: ${runtime.cyclonedxPath}`
+    );
+  }
+
+  const metadata = await stat(absolutePath).catch(() => undefined);
+  if (!metadata?.isFile()) {
+    fail(
+      "RUNTIME_SBOM_MISSING",
+      `runtime SBOM is missing: ${runtime.cyclonedxPath}`
+    );
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(await readFile(absolutePath, "utf8"));
+  } catch {
+    fail(
+      "RUNTIME_SBOM_INVALID",
+      `runtime SBOM is not valid JSON: ${runtime.cyclonedxPath}`
+    );
+  }
+
+  const sbom = document as {
+    bomFormat?: unknown;
+    specVersion?: unknown;
+    metadata?: {
+      component?: {
+        name?: unknown;
+        version?: unknown;
+        properties?: readonly { name?: unknown; value?: unknown }[];
+      };
+    };
+  };
+  if (
+    sbom.bomFormat !== "CycloneDX" ||
+    sbom.specVersion !== "1.6" ||
+    sbom.metadata?.component?.name !== "deepseek-harness-runtime" ||
+    sbom.metadata?.component?.version !== DSH_VERSION
+  ) {
+    fail(
+      "RUNTIME_SBOM_INVALID",
+      `runtime SBOM identity mismatch: ${runtime.cyclonedxPath}`
+    );
+  }
+
+  const properties = sbom.metadata?.component?.properties ?? [];
+  const sourceKind = properties.find(
+    (property) => property.name === "aio:runtime-source"
+  )?.value;
+  const contractHash = properties.find(
+    (property) => property.name === "aio:contract-hash"
+  )?.value;
+  if (sourceKind !== runtime.source.kind || contractHash !== runtime.contractHash) {
+    fail(
+      "RUNTIME_SBOM_INVALID",
+      `runtime SBOM provenance mismatch: ${runtime.cyclonedxPath}`
+    );
+  }
+}
+
 type SinglePlatformLock = {
   schemaVersion: number;
   platform: PlatformKey;
@@ -211,6 +290,7 @@ type SinglePlatformLock = {
   nodePkgTarget: string;
   files: RuntimeFile[];
   runtimeClosure: string[];
+  cyclonedxPath: string;
   license: string;
   contractHash: string;
   toolchain: RuntimeToolchain;
@@ -242,6 +322,7 @@ async function runtimeFromLock(
       license: lock.licenseResult.spdx,
       contractHash: lock.contractHash,
       runtimeClosure: spec.runtimeClosure,
+      cyclonedxPath: lock.cyclonedxPath,
       nodePkgTarget: spec.nodePkgTarget,
       toolchain: lock.toolchain,
     };
@@ -255,6 +336,7 @@ async function runtimeFromLock(
     license: payload.license,
     contractHash: payload.contractHash,
     runtimeClosure: payload.runtimeClosure ?? [],
+    cyclonedxPath: payload.cyclonedxPath,
     nodePkgTarget: payload.nodePkgTarget,
     toolchain: payload.toolchain,
   };

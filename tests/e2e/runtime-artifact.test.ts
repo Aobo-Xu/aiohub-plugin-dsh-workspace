@@ -30,6 +30,25 @@ describe("runtime artifact CLI", () => {
     const sbomContent = JSON.stringify({
       bomFormat: "CycloneDX",
       specVersion: "1.6",
+      metadata: {
+        component: {
+          type: "application",
+          name: "deepseek-harness-runtime",
+          version: "0.1.2-alpha.3",
+          licenses: [{ license: { id: "MIT" } }],
+          properties: [
+            {
+              name: "aio:runtime-source",
+              value: "project-built-from-official-source",
+            },
+            {
+              name: "aio:contract-hash",
+              value:
+                "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
+            },
+          ],
+        },
+      },
     });
 
     await mkdir(join(runtimeRoot, "bin"), { recursive: true });
