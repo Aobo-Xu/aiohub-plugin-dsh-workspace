@@ -7,6 +7,7 @@ fn linux_reports_bwrap_before_landlock() {
 
     assert_eq!(status.level, SandboxLevel::Partial);
     assert_eq!(status.backend, SandboxBackend::Bwrap);
+    assert_eq!(status.fallback_backend, Some(SandboxBackend::Landlock));
     assert_eq!(status.reason, Some("bwrap preferred; landlock fallback"));
 }
 
@@ -16,6 +17,7 @@ fn linux_arm64_reports_the_same_sandbox_preference() {
 
     assert_eq!(status.level, SandboxLevel::Partial);
     assert_eq!(status.backend, SandboxBackend::Bwrap);
+    assert_eq!(status.fallback_backend, Some(SandboxBackend::Landlock));
     assert_eq!(status.reason, Some("bwrap preferred; landlock fallback"));
 }
 
@@ -25,6 +27,7 @@ fn macos_reports_seatbelt_as_a_full_sandbox() {
 
     assert_eq!(status.level, SandboxLevel::Full);
     assert_eq!(status.backend, SandboxBackend::Seatbelt);
+    assert_eq!(status.fallback_backend, None);
     assert_eq!(status.reason, None);
 }
 
@@ -34,5 +37,6 @@ fn windows_reports_restricted_token_plus_acl() {
 
     assert_eq!(status.level, SandboxLevel::Partial);
     assert_eq!(status.backend, SandboxBackend::RestrictedToken);
+    assert_eq!(status.fallback_backend, None);
     assert_eq!(status.reason, Some("restricted token plus ACL"));
 }

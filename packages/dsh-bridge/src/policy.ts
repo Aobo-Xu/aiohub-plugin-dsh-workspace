@@ -40,7 +40,10 @@ export function authorizeTask(
   policy: PermissionPolicy,
   sandbox: SandboxStatus,
 ): void {
-  if (policy.permission === "full-access" && sandbox.level === "partial") {
+  const fullAccessAvailable =
+    sandbox.level === "full" && sandbox.backend === "seatbelt";
+
+  if (policy.permission === "full-access" && !fullAccessAvailable) {
     throw new Error("REQUIRED_SANDBOX_UNAVAILABLE");
   }
 }

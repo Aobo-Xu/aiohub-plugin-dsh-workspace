@@ -52,6 +52,19 @@ describe("DSH permission policy", () => {
     ).toThrowError("REQUIRED_SANDBOX_UNAVAILABLE");
   });
 
+  it("rejects full access when the reported level does not match backend capability", () => {
+    expect(() =>
+      authorizeTask(
+        { permission: "full-access", sandboxPolicy: "ask" },
+        {
+          level: "full",
+          backend: "bwrap",
+          reason: "bwrap preferred; landlock fallback",
+        },
+      ),
+    ).toThrowError("REQUIRED_SANDBOX_UNAVAILABLE");
+  });
+
   it("allows a task when the selected permission is covered by the sandbox", () => {
     expect(() =>
       authorizeTask(
