@@ -331,4 +331,35 @@ describe("runtime supply-chain CLI", () => {
 
     await rm(root, { recursive: true, force: true });
   });
+
+  it.each([
+    "scripts/runtime/build-from-source.ts",
+    "scripts/runtime/generate-sbom.ts",
+    "scripts/runtime/resolve-runtime.ts",
+    "scripts/runtime/verify-runtime.ts",
+  ])("prints Node-only help for %s", (script) => {
+    const result = spawnSync(
+      "node",
+      ["--experimental-strip-types", script, "--help"],
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
+    );
+
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("node --experimental-strip-types");
+    expect(result.stdout).not.toContain("bun scripts/");
+  });
+
+  it("routes package runtime scripts through Node instead of Bun", async () => {
+    const packageJson = JSON.parse(
+      await readFile(new URL("../../package.json", import.meta.url), "utf8")
+    );
+
+    for (const name of ["runtime:resolve-current", "build:dsh-source"]) {
+      expect(packageJson.scripts[name]).toBeDefined();
+      expect(packageJson.scripts[name]).toMatch(
+        /^node --experimental-strip-types scripts\/runtime\//
+      );
+      expect(packageJson.scripts[name]).not.toContain("bun");
+    }
+  });
 });

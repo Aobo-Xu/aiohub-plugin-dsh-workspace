@@ -54,4 +54,45 @@ describe("DSH manifest contract", () => {
       expect.objectContaining({ name: "shutdown" })
     );
   });
+
+  it("declares facade-compatible parameters for every runtime method", async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL("../../../manifest.json", import.meta.url), "utf8")
+    );
+    const expected = {
+      initialize: ["hostApiVersion", "platform", "pluginDataDir", "prewarm"],
+      acquireSession: [
+        "domainGenerationId",
+        "contractHash",
+        "sessionId",
+        "viewId",
+        "requestedMode",
+      ],
+      transferController: [
+        "domainGenerationId",
+        "contractHash",
+        "sessionId",
+        "leaseId",
+        "mode",
+        "targetViewId",
+      ],
+      command: ["lease", "command"],
+      snapshot: ["sessionId", "cursor"],
+      shutdown: ["reason"],
+    };
+
+    for (const [name, parameterNames] of Object.entries(expected)) {
+      const method = manifest.methods.find((item) => item.name === name);
+      expect(method, `missing method ${name}`).toBeDefined();
+      expect(
+        method.parameters.map((parameter) => parameter.name)
+      ).toEqual(parameterNames);
+      for (const parameter of method.parameters) {
+        expect(parameter.type).toEqual(expect.any(String));
+        const isOptionalCursor =
+          name === "snapshot" && parameter.name === "cursor";
+        expect(parameter.required ?? true).toBe(!isOptionalCursor);
+      }
+    }
+  });
 });

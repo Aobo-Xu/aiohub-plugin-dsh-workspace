@@ -99,7 +99,7 @@ async function verifySourceLock(sourceRoot: string): Promise<string> {
 
 function usage(): string {
   return [
-    "Usage: bun scripts/runtime/build-from-source.ts [flags]",
+    "Usage: node --experimental-strip-types scripts/runtime/build-from-source.ts [flags]",
     "",
     "  --source-root <path>  Pinned DSH source checkout.",
     "  --platform <key>      win32-x64, linux-x64, linux-arm64, or darwin-arm64.",

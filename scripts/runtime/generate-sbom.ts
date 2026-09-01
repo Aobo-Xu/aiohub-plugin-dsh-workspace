@@ -44,7 +44,7 @@ async function readLock(path: string): Promise<{
 
 function usage(): string {
   return [
-    "Usage: bun scripts/runtime/generate-sbom.ts --lock <path> --out <path>",
+    "Usage: node --experimental-strip-types scripts/runtime/generate-sbom.ts --lock <path> --out <path>",
     "",
     "  --lock <path>  Runtime lock JSON.",
     "  --out <path>   CycloneDX JSON output path.",

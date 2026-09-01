@@ -20,9 +20,9 @@
     "build:protocol": "bun run generate:protocol && cargo build -p aio-dsh-protocol --release",
     "generate:protocol": "cargo run -p aio-dsh-protocol --bin generate --",
     "check:generated": "cargo run -p aio-dsh-protocol --bin generate -- --check",
-    "runtime:resolve-current": "bun scripts/runtime/resolve-runtime.ts",
+    "runtime:resolve-current": "node --experimental-strip-types scripts/runtime/resolve-runtime.ts",
     "package:platform": "bun -e \"console.error('DSH_PLATFORM_PACKAGE_TASK_14_PENDING'); process.exit(1)\"",
-    "build:dsh-source": "bun scripts/runtime/build-from-source.ts"
+    "build:dsh-source": "node --experimental-strip-types scripts/runtime/build-from-source.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.11",

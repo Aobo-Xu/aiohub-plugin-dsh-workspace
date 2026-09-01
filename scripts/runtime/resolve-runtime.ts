@@ -225,7 +225,7 @@ export async function resolveRuntime(
 
 function usage(): string {
   return [
-    "Usage: bun scripts/runtime/resolve-runtime.ts [flags]",
+    "Usage: node --experimental-strip-types scripts/runtime/resolve-runtime.ts [flags]",
     "",
     "  --platform <key>  win32-x64, linux-x64, linux-arm64, or darwin-arm64.",
     "                   Defaults to the current host platform.",

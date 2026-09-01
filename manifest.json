@@ -30,37 +30,63 @@
     {
       "name": "initialize",
       "description": "Negotiate and initialize the DSH execution domain.",
-      "parameters": [],
+      "parameters": [
+        { "name": "hostApiVersion", "type": "number", "required": true },
+        { "name": "platform", "type": "string", "required": true },
+        { "name": "pluginDataDir", "type": "string", "required": true },
+        { "name": "prewarm", "type": "boolean", "required": true }
+      ],
       "returnType": "Promise<object>"
     },
     {
       "name": "acquireSession",
       "description": "Acquire a controller or observer lease for a DSH session.",
-      "parameters": [],
+      "parameters": [
+        { "name": "domainGenerationId", "type": "string", "required": true },
+        { "name": "contractHash", "type": "string", "required": true },
+        { "name": "sessionId", "type": "string", "required": true },
+        { "name": "viewId", "type": "string", "required": true },
+        { "name": "requestedMode", "type": "string", "required": true }
+      ],
       "returnType": "Promise<object>"
     },
     {
       "name": "transferController",
       "description": "Transfer a DSH session controller lease to another view.",
-      "parameters": [],
+      "parameters": [
+        { "name": "domainGenerationId", "type": "string", "required": true },
+        { "name": "contractHash", "type": "string", "required": true },
+        { "name": "sessionId", "type": "string", "required": true },
+        { "name": "leaseId", "type": "string", "required": true },
+        { "name": "mode", "type": "string", "required": true },
+        { "name": "targetViewId", "type": "string", "required": true }
+      ],
       "returnType": "Promise<object>"
     },
     {
       "name": "command",
       "description": "Execute a DSH runtime command with a valid controller lease.",
-      "parameters": [],
+      "parameters": [
+        { "name": "lease", "type": "object", "required": true },
+        { "name": "command", "type": "object", "required": true }
+      ],
       "returnType": "Promise<object>"
     },
     {
       "name": "snapshot",
       "description": "Read a durable DSH session snapshot.",
-      "parameters": [],
+      "parameters": [
+        { "name": "sessionId", "type": "string", "required": true },
+        { "name": "cursor", "type": "string", "required": false }
+      ],
       "returnType": "Promise<object>"
     },
     {
       "name": "shutdown",
       "description": "Gracefully stop the DSH execution domain for the supplied lifecycle reason.",
-      "parameters": [],
+      "parameters": [
+        { "name": "reason", "type": "string", "required": true }
+      ],
       "returnType": "Promise<void>"
     }
   ],

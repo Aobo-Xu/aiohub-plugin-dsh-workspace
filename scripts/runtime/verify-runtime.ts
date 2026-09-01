@@ -266,7 +266,7 @@ function singlePlatformLock(): unknown {
 
 function usage(): string {
   return [
-    "Usage: bun scripts/runtime/verify-runtime.ts --lock <path> --root <path> [--platform <key>] [--offline]",
+    "Usage: node --experimental-strip-types scripts/runtime/verify-runtime.ts --lock <path> --root <path> [--platform <key>] [--offline]",
     "",
     "  --lock <path>     Runtime lock JSON.",
     "  --root <path>     Runtime artifact root.",
