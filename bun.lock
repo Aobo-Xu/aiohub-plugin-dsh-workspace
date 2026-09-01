@@ -10,12 +10,18 @@
         "vitest": "^4.1.8",
       },
     },
+    "packages/dsh-bridge": {
+      "name": "@aiohub/dsh-bridge",
+      "version": "0.1.0",
+    },
     "packages/runtime-facade": {
       "name": "@aiohub/dsh-runtime-facade",
       "version": "0.1.0",
     },
   },
   "packages": {
+    "@aiohub/dsh-bridge": ["@aiohub/dsh-bridge@workspace:packages/dsh-bridge"],
+
     "@aiohub/dsh-runtime-facade": ["@aiohub/dsh-runtime-facade@workspace:packages/runtime-facade"],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],

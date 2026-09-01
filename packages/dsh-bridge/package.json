@@ -1,0 +1,11 @@
+{
+  "name": "@aiohub/dsh-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./errors": "./src/errors.ts",
+    "./public-services": "./src/public-services.ts"
+  }
+}
