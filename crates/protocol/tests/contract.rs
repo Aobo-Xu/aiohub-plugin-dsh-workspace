@@ -5,8 +5,8 @@ use aio_dsh_protocol::{
     CONTRACT_HASH, CommandPayload, CompatibilityIssue, Endpoint, Envelope, InitializeRequest,
     InteractionKind, InteractionPayload, InteractionRequest, InteractionResolutionReason,
     InteractionResolved, NotificationPayload, OverloadNotification, PlatformFacts, PlatformKey,
-    PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, SandboxLevel,
-    SandboxStatus, negotiate_initialize,
+    PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, SandboxBackend,
+    SandboxLevel, SandboxStatus, negotiate_initialize,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -30,7 +30,7 @@ fn initialize_request(
             architecture: "x86_64".to_owned(),
             sandbox: SandboxStatus {
                 level: SandboxLevel::Full,
-                backend: "restricted-token".to_owned(),
+                backend: SandboxBackend::RestrictedToken,
                 reason: None,
             },
         },
@@ -94,6 +94,30 @@ fn initialize_request_rejects_unknown_contract_fields() {
         .insert("unexpected".to_owned(), json!(true));
 
     assert!(serde_json::from_value::<InitializeRequest>(value).is_err());
+}
+
+#[test]
+fn sandbox_backend_rejects_unknown_wire_values() {
+    let invalid = json!({
+        "level": "full",
+        "backend": "docker"
+    });
+
+    assert!(serde_json::from_value::<SandboxStatus>(invalid).is_err());
+}
+
+#[test]
+fn sandbox_backends_use_exact_wire_values() {
+    let cases = [
+        (SandboxBackend::Bwrap, "bwrap"),
+        (SandboxBackend::Landlock, "landlock"),
+        (SandboxBackend::Seatbelt, "seatbelt"),
+        (SandboxBackend::RestrictedToken, "restricted-token"),
+    ];
+
+    for (backend, expected) in cases {
+        assert_eq!(serde_json::to_value(backend).unwrap(), json!(expected));
+    }
 }
 
 #[test]

@@ -9,5 +9,8 @@
     "lib": ["ES2022"],
     "types": []
   },
-  "files": ["generated/protocol.d.ts"]
+  "files": [
+    "generated/protocol.d.ts",
+    "tests/contract/sandbox-parity.type-test.ts"
+  ]
 }

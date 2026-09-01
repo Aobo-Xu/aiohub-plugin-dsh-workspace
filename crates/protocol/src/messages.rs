@@ -137,9 +137,18 @@ pub enum PlatformKey {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SandboxStatus {
     pub level: SandboxLevel,
-    pub backend: String,
+    pub backend: SandboxBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxBackend {
+    Bwrap,
+    Landlock,
+    Seatbelt,
+    RestrictedToken,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
