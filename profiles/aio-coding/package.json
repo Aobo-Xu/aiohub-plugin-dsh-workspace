@@ -1,7 +1,9 @@
 {
   "name": "dsh-profile-aio-coding",
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@aiohub/dsh-bridge": "workspace:*"
+  },
   "dsh": {
     "profile": {
       "bundles": ["@deepseek-ai/dsh-base"],

@@ -88,6 +88,24 @@ describe("dsh-bridge public service contract", () => {
       "systemPrompt",
     ]);
   });
+
+  it("rejects null and primitive service values", () => {
+    for (const value of [null, 0, "", false]) {
+      const context: Record<string, unknown> = {};
+      for (const name of REQUIRED_SERVICES) context[name] = value;
+
+      let failure: unknown;
+      try {
+        assertPublicServices(context);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(BridgeStartupError);
+      expect((failure as BridgeStartupError).code).toBe("INVALID_PUBLIC_SERVICES");
+      expect((failure as BridgeStartupError).details.invalid).toEqual([...REQUIRED_SERVICES]);
+    }
+  });
 });
 
 describe("aio-coding profile composition", () => {
@@ -113,6 +131,17 @@ describe("aio-coding profile composition", () => {
       Array.isArray(row.insert) ? (row.insert as PatchRow[]) : [],
     );
     expect(inserts.some((row) => row.id === "aiohub-dsh-bridge")).toBe(true);
+  });
+
+  it("declares the bridge as a profile dependency", () => {
+    const profile = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../../profiles/aio-coding/package.json", import.meta.url)),
+        "utf8",
+      ),
+    ) as { dependencies?: Record<string, string> };
+
+    expect(profile.dependencies?.["@aiohub/dsh-bridge"]).toBeDefined();
   });
 });
 
