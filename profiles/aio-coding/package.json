@@ -1,0 +1,11 @@
+{
+  "name": "dsh-profile-aio-coding",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base"],
+      "patchReload": "startup"
+    }
+  }
+}

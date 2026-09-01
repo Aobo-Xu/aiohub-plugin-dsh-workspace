@@ -1,0 +1,11 @@
+# AIO Coding profile layer, applied over @deepseek-ai/dsh-base.
+# The managed Coding workstation must not upload session telemetry.
+- id: session-telemetry-otel
+  disabled: true
+
+# Staged attach point for the AIO-managed bridge. @aiohub/dsh-bridge declares
+# its Cordis bundle and public service surface in a later task; keeping the row
+# id-targeted makes that move additive.
+- insert:
+    - id: aiohub-dsh-bridge
+      name: '@aiohub/dsh-bridge'
