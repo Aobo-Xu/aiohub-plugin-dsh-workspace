@@ -93,8 +93,9 @@ describe("runtime artifact CLI", () => {
     }));
 
     const result = spawnSync(
-      "bun",
+      "node",
       [
+        "--experimental-strip-types",
         "scripts/runtime/verify-runtime.ts",
         "--lock",
         lockPath,

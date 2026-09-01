@@ -37,11 +37,14 @@ const expectedTargets: Record<PlatformKey, string> = {
 };
 
 class RuntimeVerificationError extends Error {
+  readonly code: string;
+
   constructor(
-    readonly code: string,
+    code: string,
     message: string
   ) {
     super(message);
+    this.code = code;
     this.name = "RuntimeVerificationError";
   }
 }

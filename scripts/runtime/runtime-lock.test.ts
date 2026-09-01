@@ -252,8 +252,8 @@ describe("runtime lock verification", () => {
 describe("runtime supply-chain CLI", () => {
   it("prints build prerequisites for source builds", () => {
     const result = spawnSync(
-      "bun",
-      ["scripts/runtime/build-from-source.ts", "--help"],
+      "node",
+      ["--experimental-strip-types", "scripts/runtime/build-from-source.ts", "--help"],
       { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
     );
 
@@ -265,8 +265,9 @@ describe("runtime supply-chain CLI", () => {
 
   it("fails closed with a stable prerequisite diagnostic", () => {
     const result = spawnSync(
-      "bun",
+      "node",
       [
+        "--experimental-strip-types",
         "scripts/runtime/build-from-source.ts",
         "--source-root",
         repositoryRoot,
@@ -304,8 +305,15 @@ describe("runtime supply-chain CLI", () => {
     await writeFile(lockPath, `${JSON.stringify(lock)}\n`);
 
     const result = spawnSync(
-      "bun",
-      ["scripts/runtime/generate-sbom.ts", "--lock", lockPath, "--out", output],
+      "node",
+      [
+        "--experimental-strip-types",
+        "scripts/runtime/generate-sbom.ts",
+        "--lock",
+        lockPath,
+        "--out",
+        output,
+      ],
       { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
     );
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
