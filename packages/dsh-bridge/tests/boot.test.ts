@@ -153,8 +153,6 @@ describe("dsh-bridge fail-closed stubs", () => {
     ["createEventService", createEventService],
     ["createSnapshotRecovery", createSnapshotRecovery],
     ["createBoundedQueue", createBoundedQueue],
-    ["createProfileAdapter", createProfileAdapter],
-    ["createCredentialProvider", createCredentialProvider],
     ["createPromptContribution", createPromptContribution],
     ["createLiteralPlaceholderCodec", createLiteralPlaceholderCodec],
     ["createTurnSnapshot", createTurnSnapshot],
@@ -163,6 +161,19 @@ describe("dsh-bridge fail-closed stubs", () => {
 
   it.each(stubs)("fails closed when %s is loaded early", (_name, factory) => {
     expect(factory).toThrow(BridgeNotImplementedError);
+  });
+
+  it("loads implemented model adapters without failing closed", () => {
+    expect(createProfileAdapter()).toBeTypeOf("object");
+    expect(
+      createCredentialProvider({
+        mirror: {
+          replace: async () => undefined,
+          resolve: async () => undefined,
+          describe: async () => ({ configured: false, writable: true }),
+        },
+      }),
+    ).toBeTypeOf("object");
   });
 
   it("identifies the not-implemented feature on a thrown stub error", () => {
