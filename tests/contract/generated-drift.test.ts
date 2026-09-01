@@ -70,6 +70,9 @@ function copyProtocolWorkspace(outputRoot: string, includeHash: boolean) {
   cpSync(join(repositoryRoot, "crates", "protocol"), join(outputRoot, "crates", "protocol"), {
     recursive: true,
   });
+  cpSync(join(repositoryRoot, "crates", "supervisor"), join(outputRoot, "crates", "supervisor"), {
+    recursive: true,
+  });
   mkdirSync(join(outputRoot, "generated"), { recursive: true });
   copyFileSync(
     join(repositoryRoot, "generated", "protocol.schema.json"),
