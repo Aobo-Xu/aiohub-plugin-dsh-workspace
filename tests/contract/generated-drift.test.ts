@@ -171,6 +171,20 @@ describe("generated protocol contract", () => {
     }
   });
 
+  test("a fresh checkout preserves generated artifact bytes", () => {
+    for (const fileName of ["protocol.schema.json", "protocol.d.ts"] as const) {
+      const committed = spawnSync(
+        "git",
+        ["show", `HEAD:generated/${fileName}`],
+        { cwd: repositoryRoot, maxBuffer: 10 * 1024 * 1024 },
+      );
+      expect(committed.status, committed.stderr.toString()).toBe(0);
+      expect(readFileSync(join(repositoryRoot, "generated", fileName))).toEqual(
+        committed.stdout,
+      );
+    }
+  });
+
   test("check mode reports isolated drift without touching tracked artifacts", () => {
     const outputRoot = makeTemporaryRoot("drift");
     const trackedBefore = generatedFileNames.map((fileName) =>
