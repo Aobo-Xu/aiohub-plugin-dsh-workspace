@@ -21,7 +21,7 @@
     "generate:protocol": "cargo run -p aio-dsh-protocol --bin generate --",
     "check:generated": "cargo run -p aio-dsh-protocol --bin generate -- --check",
     "runtime:resolve-current": "node --experimental-strip-types scripts/runtime/resolve-runtime.ts",
-    "package:platform": "bun -e \"console.error('DSH_PLATFORM_PACKAGE_TASK_14_PENDING'); process.exit(1)\"",
+    "package:platform": "node --experimental-strip-types scripts/package-platform.ts",
     "build:dsh-source": "node --experimental-strip-types scripts/runtime/build-from-source.ts"
   },
   "devDependencies": {
