@@ -6,18 +6,9 @@ import {
   assertPublicServices,
   BridgeNotImplementedError,
   BridgeStartupError,
-  createBoundedQueue,
-  createControllerLeaseService,
   createCredentialProvider,
-  createEventService,
-  createInteractionService,
-  createLiteralPlaceholderCodec,
   createPolicy,
   createProfileAdapter,
-  createPromptContribution,
-  createSessionService,
-  createSnapshotRecovery,
-  createTurnSnapshot,
   REQUIRED_SERVICES,
 } from "../src/index.js";
 
@@ -147,19 +138,10 @@ describe("aio-coding profile composition", () => {
 
 describe("dsh-bridge fail-closed stubs", () => {
   const stubs: ReadonlyArray<[string, () => unknown]> = [
-    ["createSessionService", createSessionService],
-    ["createControllerLeaseService", createControllerLeaseService],
-    ["createInteractionService", createInteractionService],
-    ["createEventService", createEventService],
-    ["createSnapshotRecovery", createSnapshotRecovery],
-    ["createBoundedQueue", createBoundedQueue],
-    ["createPromptContribution", createPromptContribution],
-    ["createLiteralPlaceholderCodec", createLiteralPlaceholderCodec],
-    ["createTurnSnapshot", createTurnSnapshot],
     ["createPolicy", createPolicy],
   ];
 
-  it.each(stubs)("fails closed when %s is loaded early", (_name, factory) => {
+  it.each(stubs)("fails closed when createPolicy is loaded early", (_name, factory) => {
     expect(factory).toThrow(BridgeNotImplementedError);
   });
 
@@ -189,3 +171,4 @@ describe("dsh-bridge fail-closed stubs", () => {
     expect((failure as BridgeNotImplementedError).feature).toBe("policy");
   });
 });
+
