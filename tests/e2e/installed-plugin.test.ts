@@ -1,78 +1,102 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { packagePlatform } from "../../scripts/package-platform.ts";
 import { createPackageFixture, type PackageFixture } from "../fixtures/runtime-package.ts";
 
-const fixtures: PackageFixture[] = [];
+const roots: string[] = [];
 
 afterAll(async () => {
-  await Promise.all(fixtures.map((fixture) => rm(fixture.root, { recursive: true, force: true })));
+  await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(platform: "win32-x64" | "linux-x64"): Promise<PackageFixture> {
-  const created = await createPackageFixture(platform);
-  fixtures.push(created);
-  return created;
+async function withFixture(platform: "win32-x64" | "linux-x64"): Promise<PackageFixture> {
+  const fixture = await createPackageFixture(platform);
+  roots.push(fixture.root);
+  return fixture;
 }
 
-describe("packagePlatform", () => {
-  it("creates a platform ZIP from a verified runtime fixture", async () => {
-    const created = await fixture("win32-x64");
-    const output = join(created.root, "dsh-coding-workspace-0.1.0-win32-x64.zip");
+describe("installed DSH plugin package", () => {
+  it("extracts and validates the installed plugin layout", async () => {
+    const fixture = await withFixture("win32-x64");
+    const output = join(fixture.root, "dsh-coding-workspace-0.1.0-win32-x64.zip");
+    const installRoot = await mkdtemp(join(tmpdir(), "dsh-installed-"));
+    roots.push(installRoot);
 
     const result = await packagePlatform({
-      root: created.root,
-      runtime: created.runtime,
+      root: fixture.root,
+      runtime: fixture.runtime,
       output,
       support: "supported",
     });
 
     expect(result.platform).toBe("win32-x64");
     expect(result.support).toBe("supported");
-    expect(result.path).toBe(output);
-    expect(result.sha256).toBe(createHash("sha256").update(await readFile(output)).digest("hex"));
 
-    const listing = spawnSync("tar", ["-tf", output], { encoding: "utf8" });
-    expect(listing.status).toBe(0);
-    const entries = listing.stdout.split(/\r?\n/).filter(Boolean);
-    expect(entries).toEqual(expect.arrayContaining([
-      "manifest.json",
-      "runtime-lock.json",
-      "support-results.json",
-      "bin/deepseek-harness-sdk-runtime-win-x64.exe",
-      "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
-      "sbom/runtime.cdx.json",
-    ]));
-
-    const supportContent = spawnSync("tar", ["-xOf", output, "support-results.json"], {
+    const extract = spawnSync("tar", ["-xf", output, "-C", installRoot], {
       encoding: "utf8",
     });
-    expect(supportContent.status).toBe(0);
-    const support = JSON.parse(supportContent.stdout);
+    expect(extract.status).toBe(0);
+
+    const manifest = JSON.parse(
+      await readFile(join(installRoot, "manifest.json"), "utf8")
+    );
+    expect(manifest.id).toBe("dsh-coding-workspace");
+    expect(manifest.name).toBe("Coding工作站");
+    expect(manifest.type).toBe("sidecar");
+    expect(manifest.host.platforms).toEqual(["win32-x64"]);
+
+    const runtimeLock = JSON.parse(
+      await readFile(join(installRoot, "runtime-lock.json"), "utf8")
+    );
+    expect(runtimeLock.platform).toBe("win32-x64");
+    expect(runtimeLock.artifactState.status).toBe("built");
+    expect(runtimeLock.runtimeClosure).toEqual([
+      "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+      "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
+    ]);
+
+    const support = JSON.parse(
+      await readFile(join(installRoot, "support-results.json"), "utf8")
+    );
     expect(support).toEqual({
       platform: "win32-x64",
       support: "supported",
-      contractHash: "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
+      contractHash: runtimeLock.contractHash,
     });
+
+    const runtimeBinary = await readFile(
+      join(installRoot, "bin/deepseek-harness-sdk-runtime-win-x64.exe")
+    );
+    const ripgrep = await readFile(
+      join(installRoot, "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe")
+    );
+    expect(createHash("sha256").update(runtimeBinary).digest("hex")).toBe(
+      runtimeLock.files[0]?.sha256
+    );
+    expect(createHash("sha256").update(ripgrep).digest("hex")).toBe(
+      runtimeLock.files[1]?.sha256
+    );
   });
 
   it("rejects an unverified runtime before creating a ZIP", async () => {
-    const created = await fixture("linux-x64");
-    const output = join(created.root, "dsh-coding-workspace-0.1.0-linux-x64.zip");
+    const fixture = await withFixture("linux-x64");
+    const output = join(fixture.root, "dsh-coding-workspace-0.1.0-linux-x64.zip");
     const brokenRuntime = {
-      ...created.runtime,
+      ...fixture.runtime,
       contractHash: "not-the-contract-hash",
     };
 
-    await expect(packagePlatform({
-      root: created.root,
-      runtime: brokenRuntime,
-      output,
-      support: "supported",
-    })).rejects.toMatchObject({ code: "RUNTIME_CONTRACT_MISMATCH" });
+    await expect(
+      packagePlatform({
+        root: fixture.root,
+        runtime: brokenRuntime,
+        output,
+        support: "supported",
+      })
+    ).rejects.toMatchObject({ code: "RUNTIME_CONTRACT_MISMATCH" });
   });
 });
-
