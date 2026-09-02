@@ -8,19 +8,13 @@
     "appVersion": ">=0.7.0-alpha.4",
     "apiVersion": 3,
     "platforms": [
-      "win32-x64",
-      "linux-x64",
-      "darwin-arm64",
-      "linux-arm64"
+      "win32-x64"
     ]
   },
   "type": "sidecar",
   "sidecar": {
     "executable": {
-      "win32-x64": "bin/win32-x64/aio-dsh-supervisor.exe",
-      "linux-x64": "bin/linux-x64/aio-dsh-supervisor",
-      "darwin-arm64": "bin/darwin-arm64/aio-dsh-supervisor",
-      "linux-arm64": "bin/linux-arm64/aio-dsh-supervisor"
+      "win32-x64": "bin/win32-x64/aio-dsh-supervisor.exe"
     },
     "resident": true,
     "startupMethod": "initialize",

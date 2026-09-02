@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DSH_CAPABILITY } from "../src/types.js";
 
 describe("DSH manifest contract", () => {
-  it("declares a resident API v3 DSH execution domain on four packaged platforms", async () => {
+  it("declares a resident API v3 DSH execution domain on the first-release platform", async () => {
     const manifest = JSON.parse(
       await readFile(new URL("../../../manifest.json", import.meta.url), "utf8")
     );
@@ -15,9 +15,6 @@ describe("DSH manifest contract", () => {
       host: { apiVersion: 3 },
     });
     expect(Object.keys(manifest.sidecar.executable).sort()).toEqual([
-      "darwin-arm64",
-      "linux-arm64",
-      "linux-x64",
       "win32-x64",
     ]);
     expect(manifest.contributions).toContainEqual(
@@ -43,9 +40,6 @@ describe("DSH manifest contract", () => {
     });
     expect(manifest.sidecar.executable).toEqual({
       "win32-x64": "bin/win32-x64/aio-dsh-supervisor.exe",
-      "linux-x64": "bin/linux-x64/aio-dsh-supervisor",
-      "darwin-arm64": "bin/darwin-arm64/aio-dsh-supervisor",
-      "linux-arm64": "bin/linux-arm64/aio-dsh-supervisor",
     });
     expect(manifest.contributions).toContainEqual(
       expect.objectContaining(DSH_CAPABILITY)
