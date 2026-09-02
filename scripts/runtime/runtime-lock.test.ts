@@ -14,8 +14,8 @@ import {
 } from "./resolve-runtime.ts";
 import { verifyRuntime } from "./verify-runtime.ts";
 
-const DSH_TAG = "dsh-v0.1.2-alpha.3";
-const DSH_COMMIT = "dd6322d604e00eec1ba5e0c8541159906a21094a";
+const DSH_TAG = "dsh-v0.1.2-alpha.5";
+const DSH_COMMIT = "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
 const CONTRACT_HASH = "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519";
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runtimeClosures = {
@@ -58,7 +58,7 @@ async function writeRuntimeFixture(root: string): Promise<{
       component: {
         type: "application",
         name: "deepseek-harness-runtime",
-        version: "0.1.2-alpha.3",
+        version: "0.1.2-alpha.5",
         licenses: [{ license: { id: "Apache-2.0" } }],
         properties: [
           { name: "aio:runtime-source", value: "project-built-from-official-source" },
@@ -228,24 +228,21 @@ describe("runtime lock verification", () => {
     });
   });
 
-  it("resolves the frozen alpha.3 runtime without inventing an official wheel", async () => {
+  it("resolves the frozen alpha.5 runtime without inventing an official wheel", async () => {
     const runtime = await resolveRuntime("win32-x64");
 
     expect(runtime.platform).toBe("win32-x64");
     expect(runtime.source.kind).toBe("project-built-from-official-source");
-    expect(runtime.artifactState).toEqual({
-      status: "not-built",
-      reason: "native-runner-required",
-    });
+    expect(runtime.artifactState).toEqual({ status: "built" });
     expect(runtime.source).toMatchObject({
       tag: DSH_TAG,
       commit: DSH_COMMIT,
     });
   });
 
-  it("locks every supported platform to the frozen alpha.3 source", async () => {
+  it("locks every supported platform to the frozen alpha.5 source", async () => {
     const lockPath = new URL(
-      "../../runtime-lock/dsh-v0.1.2-alpha.3.json",
+      "../../runtime-lock/dsh-v0.1.2-alpha.5.json",
       import.meta.url
     );
     const lock = JSON.parse(await readFile(lockPath, "utf8")) as {
@@ -274,14 +271,18 @@ describe("runtime lock verification", () => {
       "darwin-arm64",
     ]);
     for (const [platform, closure] of Object.entries(runtimeClosures)) {
+      const isWindows = platform === "win32-x64";
       expect(lock.platforms[platform as keyof typeof runtimeClosures]).toMatchObject({
-        artifactState: {
-          status: "not-built",
-          reason: "native-runner-required",
-        },
+        artifactState: isWindows
+          ? { status: "built" }
+          : { status: "not-built", reason: "native-runner-required" },
         runtimeClosure: closure,
-        files: [],
       });
+      if (isWindows) {
+        expect(lock.platforms[platform as keyof typeof runtimeClosures].files.length).toBe(3);
+      } else {
+        expect(lock.platforms[platform as keyof typeof runtimeClosures].files).toEqual([]);
+      }
     }
   });
 });
@@ -328,7 +329,7 @@ describe("runtime supply-chain CLI", () => {
     const output = join(root, "runtime.cdx.json");
     const lock = {
       schemaVersion: 1,
-      version: "0.1.2-alpha.3",
+      version: "0.1.2-alpha.5",
       source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
       license: "MIT",
       contractHash: CONTRACT_HASH,
@@ -363,7 +364,7 @@ describe("runtime supply-chain CLI", () => {
     expect(sbom.bomFormat).toBe("CycloneDX");
     expect(sbom.specVersion).toBe("1.6");
     expect(sbom.metadata.component.name).toBe("deepseek-harness-runtime");
-    expect(sbom.metadata.component.version).toBe("0.1.2-alpha.3");
+    expect(sbom.metadata.component.version).toBe("0.1.2-alpha.5");
     expect(sbom.metadata.component.licenses).toEqual([{ license: { id: "MIT" } }]);
 
     await rm(root, { recursive: true, force: true });

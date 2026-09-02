@@ -12,3 +12,4 @@ runtime-cache/
 .DS_Store
 Thumbs.db
 .worktrees/
+.artifacts/

@@ -10,19 +10,19 @@ use aio_dsh_supervisor::{
 fn lock_builder() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
-        "version": "0.1.2-alpha.3",
-        "tag": "dsh-v0.1.2-alpha.3",
-        "commit": "dd6322d604e00eec1ba5e0c8541159906a21094a",
-        "publishedAt": "2026-08-31T16:03:39Z",
+        "version": "0.1.2-alpha.5",
+        "tag": "dsh-v0.1.2-alpha.5",
+        "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
+        "publishedAt": "2026-09-02T07:48:33Z",
         "source": {
             "kind": "project-built-from-official-source",
-            "tag": "dsh-v0.1.2-alpha.3",
-            "commit": "dd6322d604e00eec1ba5e0c8541159906a21094a"
+            "tag": "dsh-v0.1.2-alpha.5",
+            "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
         },
         "officialWheel": {
             "status": "unavailable",
             "distributions": ["deepseek-harness-sdk", "deepseek-harness-runtime-bin"],
-            "reason": "not-published-for-0.1.2a3"
+            "reason": "not-published-for-0.1.2a5"
         },
         "license": "MIT",
         "licenseResult": { "spdx": "MIT", "source": "upstream-package" },
@@ -68,7 +68,7 @@ impl Drop for TempRoot {
 }
 
 fn write_lock(root: &Path) -> PathBuf {
-    let path = root.join("dsh-v0.1.2-alpha.3.json");
+    let path = root.join("dsh-v0.1.2-alpha.5.json");
     fs::write(
         &path,
         serde_json::to_vec(&lock_builder()).expect("serialize lock"),

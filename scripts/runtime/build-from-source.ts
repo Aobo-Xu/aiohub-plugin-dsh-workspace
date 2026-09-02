@@ -107,7 +107,7 @@ function usage(): string {
     "  --help                Show this help.",
     "",
     `Build prerequisites: Node ${toolchain.node}, pnpm ${toolchain.pnpm}, Python ${toolchain.python}, Rust ${toolchain.rust}.`,
-    "The source must be pinned to dsh-v0.1.2-alpha.3 at dd6322d604e00eec1ba5e0c8541159906a21094a.",
+    "The source must be pinned to dsh-v0.1.2-alpha.5 at db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5.",
   ].join("\n");
 }
 

@@ -17,8 +17,8 @@ export type RuntimeSource =
     }
   | {
       kind: "project-built-from-official-source";
-      tag: "dsh-v0.1.2-alpha.3";
-      commit: "dd6322d604e00eec1ba5e0c8541159906a21094a";
+      tag: "dsh-v0.1.2-alpha.5";
+      commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
     };
 
 export type RuntimeFile = {
@@ -60,7 +60,7 @@ export type RuntimePlatformSpec = {
 export type OfficialWheelStatus =
   | {
       status: "unavailable";
-      reason: "not-published-for-0.1.2a3";
+      reason: "not-published-for-0.1.2a5";
     }
   | {
       status: "available";
@@ -71,10 +71,10 @@ export type OfficialWheelStatus =
 
 export type RuntimeLockV1 = {
   schemaVersion: 1;
-  version: "0.1.2-alpha.3";
-  tag: "dsh-v0.1.2-alpha.3";
-  commit: "dd6322d604e00eec1ba5e0c8541159906a21094a";
-  publishedAt: "2026-08-31T16:03:39Z";
+  version: "0.1.2-alpha.5";
+  tag: "dsh-v0.1.2-alpha.5";
+  commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
+  publishedAt: "2026-09-02T07:48:33Z";
   source: RuntimeSource;
   officialWheel: {
     status: "unavailable";
@@ -107,10 +107,10 @@ export type VerifiedRuntime = {
   toolchain: RuntimeToolchain;
 };
 
-export const DSH_TAG = "dsh-v0.1.2-alpha.3" as const;
+export const DSH_TAG = "dsh-v0.1.2-alpha.5" as const;
 export const DSH_COMMIT =
-  "dd6322d604e00eec1ba5e0c8541159906a21094a" as const;
-export const DSH_VERSION = "0.1.2-alpha.3" as const;
+  "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5" as const;
+export const DSH_VERSION = "0.1.2-alpha.5" as const;
 export const DSH_CONTRACT_HASH =
   "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519" as const;
 
@@ -120,7 +120,7 @@ const repositoryRoot = dirname(
 const lockPath = join(
   repositoryRoot,
   "runtime-lock",
-  "dsh-v0.1.2-alpha.3.json"
+  "dsh-v0.1.2-alpha.5.json"
 );
 
 const platformKeys = [
@@ -197,7 +197,7 @@ export function officialWheelStatus(
   }
   return {
     status: "unavailable",
-    reason: "not-published-for-0.1.2a3",
+    reason: "not-published-for-0.1.2a5",
   };
 }
 
@@ -235,7 +235,7 @@ function usage(): string {
     "  --offline        Do not probe PyPI for an official wheel.",
     "  --help           Show this help.",
     "",
-    "The alpha.3 official wheel is unavailable for all platforms.",
+    "The alpha.5 official wheel is unavailable for all platforms.",
     "Resolution therefore selects project-built-from-official-source.",
   ].join("\n");
 }

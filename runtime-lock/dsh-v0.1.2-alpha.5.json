@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.2-alpha.3",
-  "tag": "dsh-v0.1.2-alpha.3",
-  "commit": "dd6322d604e00eec1ba5e0c8541159906a21094a",
-  "publishedAt": "2026-08-31T16:03:39Z",
+  "version": "0.1.2-alpha.5",
+  "tag": "dsh-v0.1.2-alpha.5",
+  "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
+  "publishedAt": "2026-09-02T07:48:33Z",
   "source": {
     "kind": "project-built-from-official-source",
-    "tag": "dsh-v0.1.2-alpha.3",
-    "commit": "dd6322d604e00eec1ba5e0c8541159906a21094a"
+    "tag": "dsh-v0.1.2-alpha.5",
+    "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
   },
   "officialWheel": {
     "status": "unavailable",
@@ -15,7 +15,7 @@
       "deepseek-harness-sdk",
       "deepseek-harness-runtime-bin"
     ],
-    "reason": "not-published-for-0.1.2a3"
+    "reason": "not-published-for-0.1.2a5"
   },
   "license": "MIT",
   "licenseResult": {
@@ -37,8 +37,7 @@
       "platform": "win32-x64",
       "arch": "x64",
       "artifactState": {
-        "status": "not-built",
-        "reason": "native-runner-required"
+        "status": "built"
       },
       "nodePkgTarget": "node24-win-x64",
       "pythonTarget": "win_amd64",
@@ -50,7 +49,23 @@
         "bin/deepseek-harness-sdk-runtime-win-x64.exe",
         "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe"
       ],
-      "files": []
+      "files": [
+        {
+          "path": "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+          "sha256": "2bb0507875a36b291177fbcb13aef011a9d78ca1e57d09343a0415394fa16aac",
+          "executable": true
+        },
+        {
+          "path": "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
+          "sha256": "f9dde63498b3193f098355dbec97af99dc4f6b8fa0df5ed04114a03012c042cb",
+          "executable": true
+        },
+        {
+          "path": "sbom/runtime.cdx.json",
+          "sha256": "0584cb7362bd9d6c378dd673983b9a0016c607a2bf0fc5a3488bc38e691cd69c",
+          "executable": false
+        }
+      ]
     },
     "linux-x64": {
       "platform": "linux-x64",

@@ -5,9 +5,9 @@ use std::path::{Component, Path};
 use serde::Deserialize;
 use thiserror::Error;
 
-pub const DSH_VERSION: &str = "0.1.2-alpha.3";
-pub const DSH_TAG: &str = "dsh-v0.1.2-alpha.3";
-pub const DSH_COMMIT: &str = "dd6322d604e00eec1ba5e0c8541159906a21094a";
+pub const DSH_VERSION: &str = "0.1.2-alpha.5";
+pub const DSH_TAG: &str = "dsh-v0.1.2-alpha.5";
+pub const DSH_COMMIT: &str = "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
 pub const DSH_CONTRACT_HASH: &str =
     "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519";
 
@@ -170,7 +170,7 @@ impl RuntimeValidator {
             || lock.commit != DSH_COMMIT
         {
             return Err(RuntimeValidationError::Lock(
-                "not the frozen alpha.3 release".to_owned(),
+                "not the frozen alpha.5 release".to_owned(),
             ));
         }
         if lock.contract_hash != DSH_CONTRACT_HASH {
@@ -269,7 +269,7 @@ fn validate_source(lock: &RuntimeLockV1) -> Result<(), RuntimeValidationError> {
         || lock.source.commit != DSH_COMMIT
     {
         return Err(RuntimeValidationError::Lock(
-            "runtime source is not the frozen alpha.3 source".to_owned(),
+            "runtime source is not the frozen alpha.5 source".to_owned(),
         ));
     }
     Ok(())

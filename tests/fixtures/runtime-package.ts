@@ -37,7 +37,7 @@ export async function createPackageFixture(
       component: {
         type: "application",
         name: "deepseek-harness-runtime",
-        version: "0.1.2-alpha.3",
+        version: "0.1.2-alpha.5",
         licenses: [{ license: { id: "MIT" } }],
         properties: [
           { name: "aio:runtime-source", value: "project-built-from-official-source" },
@@ -84,16 +84,16 @@ export async function createPackageFixture(
 
   const lock = {
     schemaVersion: 1,
-    version: "0.1.2-alpha.3",
-    tag: "dsh-v0.1.2-alpha.3",
-    commit: "dd6322d604e00eec1ba5e0c8541159906a21094a",
+    version: "0.1.2-alpha.5",
+    tag: "dsh-v0.1.2-alpha.5",
+    commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
     platform,
     arch: platform.endsWith("arm64") ? "arm64" : "x64",
     artifactState: { status: "built" },
     source: {
       kind: "project-built-from-official-source",
-      tag: "dsh-v0.1.2-alpha.3",
-      commit: "dd6322d604e00eec1ba5e0c8541159906a21094a",
+      tag: "dsh-v0.1.2-alpha.5",
+      commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
     },
     nodePkgTarget:
       platform === "win32-x64"

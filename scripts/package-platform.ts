@@ -104,7 +104,7 @@ async function findLockFile(root: string): Promise<string> {
     const repositoryLock = join(
       root,
       "runtime-lock",
-      "dsh-v0.1.2-alpha.3.json"
+      "dsh-v0.1.2-alpha.5.json"
     );
     await readFile(repositoryLock);
     return repositoryLock;
