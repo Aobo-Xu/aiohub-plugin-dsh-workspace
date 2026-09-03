@@ -1,21 +1,32 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { VerifiedRuntime } from "../../scripts/runtime/verify-runtime.ts";
 
 export type PackageFixture = {
   root: string;
   runtime: VerifiedRuntime;
+  supervisorPath: string;
 };
 
 export async function createPackageFixture(
-  platform: "win32-x64" | "linux-x64" | "linux-arm64" | "darwin-arm64" = "win32-x64"
+  platform:
+    "win32-x64" | "linux-x64" | "linux-arm64" | "darwin-arm64" = "win32-x64",
 ): Promise<PackageFixture> {
   const root = await mkdtemp(join(tmpdir(), "dsh-package-"));
   const runtimeRoot = join(root, "runtime");
   await mkdir(join(runtimeRoot, "bin"), { recursive: true });
   await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
+  const supervisorPath = join(
+    root,
+    "bin",
+    platform,
+    `aio-dsh-supervisor${platform === "win32-x64" ? ".exe" : ""}`,
+  );
+  await mkdir(dirname(supervisorPath), { recursive: true });
+  await writeFile(supervisorPath, "supervisor binary fixture");
+  await writeFile(join(root, "LICENSE"), "Apache License fixture\n");
 
   const runtimeBinaryName =
     platform === "win32-x64"
@@ -40,8 +51,15 @@ export async function createPackageFixture(
         version: "0.1.2-alpha.5",
         licenses: [{ license: { id: "MIT" } }],
         properties: [
-          { name: "aio:runtime-source", value: "project-built-from-official-source" },
-          { name: "aio:contract-hash", value: "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519" },
+          {
+            name: "aio:runtime-source",
+            value: "project-built-from-official-source",
+          },
+          {
+            name: "aio:contract-hash",
+            value:
+              "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
+          },
         ],
       },
     },
@@ -79,10 +97,17 @@ export async function createPackageFixture(
       startupMethod: "initialize",
       startupParams: {},
     },
-    contributions: [{ type: "capability", id: "execution-domain:dsh", version: 1, stability: "stable" }],
+    contributions: [
+      {
+        type: "capability",
+        id: "execution-domain:dsh",
+        version: 1,
+        stability: "stable",
+      },
+    ],
   };
 
-  const lock = {
+  const platformLock = {
     schemaVersion: 1,
     version: "0.1.2-alpha.5",
     tag: "dsh-v0.1.2-alpha.5",
@@ -109,28 +134,51 @@ export async function createPackageFixture(
     license: "MIT",
     cyclonedxPath: "sbom/runtime.cdx.json",
     profileVersion: "dsh-runtime-profile-v1",
-    contractHash: "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
+    contractHash:
+      "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
     aioSemverRange: ">=0.7.0-alpha.4",
   };
 
-  await writeFile(join(root, "manifest.json"), JSON.stringify(manifest, null, 2));
-  await writeFile(join(root, "runtime-lock.json"), JSON.stringify(lock, null, 2));
+  const lock = {
+    schemaVersion: 1,
+    version: "0.1.2-alpha.5",
+    tag: "dsh-v0.1.2-alpha.5",
+    commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
+    source: platformLock.source,
+    license: platformLock.license,
+    cyclonedxPath: platformLock.cyclonedxPath,
+    profileVersion: platformLock.profileVersion,
+    contractHash: platformLock.contractHash,
+    aioSemverRange: platformLock.aioSemverRange,
+    toolchain: platformLock.toolchain,
+    platforms: { [platform]: platformLock },
+  };
+
+  await writeFile(
+    join(root, "manifest.json"),
+    JSON.stringify(manifest, null, 2),
+  );
+  await writeFile(
+    join(root, "runtime-lock.json"),
+    JSON.stringify(lock, null, 2),
+  );
 
   return {
     root,
     runtime: {
       platform,
       root: runtimeRoot,
-      source: lock.source,
-      artifactState: lock.artifactState,
+      source: platformLock.source,
+      artifactState: platformLock.artifactState,
       files,
-      license: lock.license,
-      contractHash: lock.contractHash,
+      license: platformLock.license,
+      contractHash: platformLock.contractHash,
       runtimeClosure,
-      cyclonedxPath: lock.cyclonedxPath,
-      nodePkgTarget: lock.nodePkgTarget,
-      toolchain: lock.toolchain,
+      cyclonedxPath: platformLock.cyclonedxPath,
+      nodePkgTarget: platformLock.nodePkgTarget,
+      toolchain: platformLock.toolchain,
     },
+    supervisorPath,
   };
 }
 

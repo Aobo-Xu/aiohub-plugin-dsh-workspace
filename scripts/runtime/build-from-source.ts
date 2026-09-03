@@ -1,100 +1,474 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { copyFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import {
   DSH_COMMIT,
   DSH_TAG,
+  DSH_VERSION,
   type PlatformKey,
+  type RuntimeLockV1,
+  type VerifiedRuntime,
   currentPlatform,
+  loadRuntimeLock,
 } from "./resolve-runtime.ts";
+import { verifyRuntime } from "./verify-runtime.ts";
 
-const repositoryRoot = dirname(
-  dirname(dirname(fileURLToPath(import.meta.url)))
+const repositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const runtimeLockPath = join(
+  repositoryRoot,
+  "runtime-lock",
+  "dsh-v0.1.2-alpha.5.json"
 );
+const WINDOWS_PLATFORM: PlatformKey = "win32-x64";
+const WINDOWS_TARGET = "node24-win-x64";
+const WINDOWS_RUNTIME = "deepseek-harness-sdk-runtime-win-x64.exe";
+const WINDOWS_RG = "deepseek-harness-sdk-runtime-win-x64-rg.exe";
+const REQUIRED_PNPM = "11.7.0";
+const REQUIRED_NODE_MAJOR = "24";
+const EXPECTED_SOURCE_LOCK_SHA256 =
+  "e12083149a77f790d39b64d018b6b8745c6a7aa95777ecb73e0a2f5ed5fdd0d9";
 
-const targets: Record<PlatformKey, string> = {
-  "win32-x64": "node24-win-x64",
-  "linux-x64": "node24-linux-x64",
-  "linux-arm64": "node24-linux-arm64",
-  "darwin-arm64": "node24-macos-arm64",
+export type BuildFromSourceOptions = {
+  sourceRoot: string;
+  platform: PlatformKey;
+  out: string;
 };
 
-const toolchain = {
-  node: "24",
-  pnpm: "11.7.0",
-  python: "3.10",
-  rust: "1.89.0",
-} as const;
+export type SourceBuildPin = {
+  tag: string;
+  commit: string;
+  version: string;
+  packageManager: string;
+  sourceLockSha256: string;
+  license: string;
+};
 
-function run(
+type CommandRunner = (
   command: string,
   args: readonly string[],
-  options: { cwd?: string } = {}
-): string {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ?? repositoryRoot,
-    encoding: "utf8",
+  cwd: string,
+  code?: string
+) => Promise<string>;
+
+type PnpmCommand = {
+  command: string;
+  args: readonly string[];
+};
+
+type BuildFromSourceOverrides = {
+  pin?: SourceBuildPin;
+  lockPath?: string;
+  nodeVersion?: string;
+  repositoryRoot?: string;
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  runCommand?: CommandRunner;
+  resolvePnpmCommand?: () => PnpmCommand;
+  loadRuntimeLock?: (path?: string) => Promise<RuntimeLockV1>;
+  verifyRuntime?: (runtime: VerifiedRuntime) => Promise<VerifiedRuntime>;
+  generateSbom?: (out: string, lockPath: string) => Promise<void>;
+};
+
+export class RuntimeBuildError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "RuntimeBuildError";
+    this.code = code;
+  }
+}
+
+const defaultPin: SourceBuildPin = {
+  tag: DSH_TAG,
+  commit: DSH_COMMIT,
+  version: DSH_VERSION,
+  packageManager: `pnpm@${REQUIRED_PNPM}`,
+  sourceLockSha256: EXPECTED_SOURCE_LOCK_SHA256,
+  license: "MIT",
+};
+
+function fail(code: string, message: string): never {
+  throw new RuntimeBuildError(code, message);
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function run(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  code = "RUNTIME_BUILD_UPSTREAM_FAILED"
+): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, CI: "true" },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.once("error", (error) => {
+      reject(new RuntimeBuildError(code, `${command} could not start: ${error.message}`));
+    });
+    child.once("close", (status) => {
+      if (status === 0) {
+        resolvePromise(stdout.trim());
+        return;
+      }
+      const detail = stderr.trim() || stdout.trim() || "no output";
+      reject(
+        new RuntimeBuildError(
+          code,
+          `${command} ${args.join(" ")} failed with exit ${status ?? "unknown"}: ${detail}`
+        )
+      );
+    });
   });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `RUNTIME_BUILD_PREREQUISITE_MISMATCH: failed to run ${command} ${args.join(" ")}`
-    );
-  }
-  return (result.stdout ?? "").trim();
 }
 
-function verifySource(sourceRoot: string): void {
-  if (!existsSync(sourceRoot)) {
-    throw new Error(`RUNTIME_SOURCE_MISSING: ${sourceRoot}`);
+function resolvePnpmCommandForEnvironment(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): PnpmCommand {
+  const npmExecPath = environment.npm_execpath?.trim();
+  if (npmExecPath) {
+    const extension = extname(npmExecPath).toLowerCase();
+    if (extension === ".js" || extension === ".cjs" || extension === ".mjs") {
+      return { command: process.execPath, args: [npmExecPath] };
+    }
+    if (platform !== "win32" || extension !== ".cmd") {
+      return { command: npmExecPath, args: [] };
+    }
   }
-  const head = run("git", ["rev-parse", "HEAD"], { cwd: sourceRoot });
-  if (head !== DSH_COMMIT) {
-    throw new Error(`RUNTIME_SOURCE_COMMIT_MISMATCH: ${head}`);
+
+  const pnpmHome = environment.PNPM_HOME?.trim();
+  if (pnpmHome) {
+    const searchRoots =
+      platform === "win32"
+        ? [resolve(pnpmHome, "..", "pnpm", "bin")]
+        : [pnpmHome];
+    const filenames =
+      platform === "win32"
+        ? ["pnpm.mjs", "pnpm.cjs"]
+        : ["pnpm.cjs", "pnpm.mjs", "pnpm.cmd"];
+
+    for (const root of searchRoots) {
+      for (const filename of filenames) {
+        const candidate = resolve(root, filename);
+        if (!existsSync(candidate)) {
+          continue;
+        }
+        const extension = extname(candidate).toLowerCase();
+        if (extension === ".js" || extension === ".cjs" || extension === ".mjs") {
+          return { command: process.execPath, args: [candidate] };
+        }
+        return { command: candidate, args: [] };
+      }
+    }
   }
-  const tag = run("git", ["tag", "--points-at", "HEAD"], { cwd: sourceRoot });
-  if (tag !== DSH_TAG) {
-    throw new Error(`RUNTIME_SOURCE_TAG_MISMATCH: ${tag}`);
+
+  if (platform === "win32") {
+    fail(
+      "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
+      "pnpm must expose a JavaScript entrypoint through npm_execpath or PNPM_HOME on Windows."
+    );
+  }
+
+  return { command: "pnpm", args: [] };
+}
+
+function resolvePnpmCommand(): PnpmCommand {
+  return resolvePnpmCommandForEnvironment(process.env, process.platform);
+}
+
+async function readPinnedPackage(sourceRoot: string): Promise<{
+  version?: unknown;
+  license?: unknown;
+  packageManager?: unknown;
+}> {
+  const packagePath = join(sourceRoot, "package.json");
+  try {
+    return JSON.parse(await readFile(packagePath, "utf8")) as {
+      version?: unknown;
+      license?: unknown;
+      packageManager?: unknown;
+    };
+  } catch {
+    fail("RUNTIME_SOURCE_PACKAGE_INVALID", `DSH source package.json is missing or invalid: ${packagePath}`);
   }
 }
 
-function verifyToolchain(): void {
-  const nodeVersion = process.versions.node;
-  if (!nodeVersion.startsWith(`${toolchain.node}.`)) {
-    throw new Error(
-      `RUNTIME_BUILD_PREREQUISITE_MISMATCH: Node ${toolchain.node} is required, got ${nodeVersion}`
-    );
-  }
-  const pnpmVersion = run("pnpm", ["--version"]);
-  if (pnpmVersion !== toolchain.pnpm) {
-    throw new Error(
-      `RUNTIME_BUILD_PREREQUISITE_MISMATCH: pnpm ${toolchain.pnpm} is required, got ${pnpmVersion}`
-    );
-  }
-  const pythonVersion = run("python", ["--version"]);
-  if (!pythonVersion.startsWith(`Python ${toolchain.python}.`)) {
-    throw new Error(
-      `RUNTIME_BUILD_PREREQUISITE_MISMATCH: Python ${toolchain.python} is required, got ${pythonVersion}`
-    );
-  }
-  const rustVersion = run("rustc", ["--version"]);
-  if (!rustVersion.startsWith(`rustc ${toolchain.rust} `)) {
-    throw new Error(
-      `RUNTIME_BUILD_PREREQUISITE_MISMATCH: Rust ${toolchain.rust} is required, got ${rustVersion}`
+async function verifyCleanWorktree(
+  sourceRoot: string,
+  runCommand: CommandRunner
+): Promise<void> {
+  const status = await runCommand(
+    "git",
+    ["status", "--short", "--untracked-files=all"],
+    sourceRoot,
+    "RUNTIME_SOURCE_GIT_INVALID"
+  );
+  if (status !== "") {
+    fail(
+      "RUNTIME_SOURCE_DIRTY",
+      "DSH source checkout must be clean before building a pinned runtime."
     );
   }
 }
 
-async function verifySourceLock(sourceRoot: string): Promise<string> {
-  const lockPath = join(sourceRoot, "pnpm-lock.yaml");
-  if (!existsSync(lockPath)) {
-    throw new Error(`RUNTIME_SOURCE_LOCK_MISSING: ${lockPath}`);
+export async function verifyPinnedSourceCheckout(
+  sourceRoot: string,
+  pin: SourceBuildPin = defaultPin,
+  overrides: Pick<BuildFromSourceOverrides, "runCommand"> = {}
+): Promise<void> {
+  const resolvedRoot = resolve(sourceRoot);
+  const runCommand = overrides.runCommand ?? run;
+
+  try {
+    const metadata = await stat(resolvedRoot);
+    if (!metadata.isDirectory()) {
+      fail("RUNTIME_SOURCE_MISSING", `DSH source checkout is not a directory: ${resolvedRoot}`);
+    }
+  } catch {
+    fail("RUNTIME_SOURCE_MISSING", `DSH source checkout is missing: ${resolvedRoot}`);
   }
-  const content = await readFile(lockPath, "utf8");
-  return content;
+
+  const tags = await runCommand(
+    "git",
+    ["tag", "--points-at", "HEAD"],
+    resolvedRoot,
+    "RUNTIME_SOURCE_GIT_INVALID"
+  );
+  if (!tags.split(/\r?\n/).includes(pin.tag)) {
+    fail("RUNTIME_SOURCE_TAG_MISMATCH", `DSH source must point at ${pin.tag}`);
+  }
+
+  const head = await runCommand(
+    "git",
+    ["rev-parse", "HEAD"],
+    resolvedRoot,
+    "RUNTIME_SOURCE_GIT_INVALID"
+  );
+  if (head !== pin.commit) {
+    fail("RUNTIME_SOURCE_COMMIT_MISMATCH", `DSH source must be ${pin.commit}, got ${head}`);
+  }
+
+  await verifyCleanWorktree(resolvedRoot, runCommand);
+
+  const lockPath = join(resolvedRoot, "pnpm-lock.yaml");
+  let lockContent: string;
+  try {
+    lockContent = await readFile(lockPath, "utf8");
+  } catch {
+    fail("RUNTIME_SOURCE_LOCK_MISSING", `DSH source must include pnpm-lock.yaml: ${lockPath}`);
+  }
+
+  const lockDigest = sha256(lockContent);
+  if (lockDigest !== pin.sourceLockSha256.toLowerCase()) {
+    fail(
+      "RUNTIME_SOURCE_LOCK_MISMATCH",
+      `DSH source lock must hash to ${pin.sourceLockSha256}, got ${lockDigest}`
+    );
+  }
+
+  const packageJson = await readPinnedPackage(resolvedRoot);
+  if (packageJson.version !== pin.version) {
+    fail(
+      "RUNTIME_SOURCE_VERSION_MISMATCH",
+      `DSH source must be version ${pin.version}, got ${String(packageJson.version)}`
+    );
+  }
+  if (packageJson.license !== pin.license) {
+    fail(
+      "RUNTIME_SOURCE_LICENSE_MISMATCH",
+      `DSH source license must be ${pin.license}, got ${String(packageJson.license)}`
+    );
+  }
+  if (packageJson.packageManager !== pin.packageManager) {
+    fail(
+      "RUNTIME_SOURCE_PNPM_MISMATCH",
+      `DSH source must pin ${pin.packageManager}, got ${String(packageJson.packageManager)}`
+    );
+  }
+}
+
+async function verifyToolchain(
+  sourceRoot: string,
+  runCommand: CommandRunner,
+  resolvePnpm: () => PnpmCommand,
+  nodeVersion: string
+): Promise<void> {
+  if (!nodeVersion.startsWith(`${REQUIRED_NODE_MAJOR}.`)) {
+    fail(
+      "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
+      `Node ${REQUIRED_NODE_MAJOR} is required, got ${nodeVersion}`
+    );
+  }
+  const pnpm = resolvePnpm();
+  const pnpmVersion = await runCommand(
+    pnpm.command,
+    [...pnpm.args, "--version"],
+    sourceRoot,
+    "RUNTIME_BUILD_PREREQUISITE_MISMATCH"
+  );
+  if (pnpmVersion !== REQUIRED_PNPM) {
+    fail(
+      "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
+      `pnpm ${REQUIRED_PNPM} is required, got ${pnpmVersion}`
+    );
+  }
+}
+
+async function runPnpm(
+  sourceRoot: string,
+  args: readonly string[],
+  runCommand: CommandRunner,
+  resolvePnpm: () => PnpmCommand,
+  code?: string
+): Promise<string> {
+  const pnpm = resolvePnpm();
+  return runCommand(pnpm.command, [...pnpm.args, ...args], sourceRoot, code);
+}
+
+async function stageWindowsRuntime(sourceRoot: string, out: string): Promise<void> {
+  const sourceDirectory = join(sourceRoot, "dist-exe");
+  const expectedFiles = new Set([WINDOWS_RUNTIME, WINDOWS_RG]);
+  const closure = await readdir(sourceDirectory).catch(() => undefined);
+  if (closure === undefined) {
+    fail("RUNTIME_BUILD_CLOSURE_MISMATCH", `upstream build did not produce ${sourceDirectory}`);
+  }
+
+  const unexpected = closure.filter(
+    (name) =>
+      name.startsWith("deepseek-harness-sdk-runtime-win-x64") && !expectedFiles.has(name)
+  );
+  if (unexpected.length > 0) {
+    fail(
+      "RUNTIME_BUILD_CLOSURE_MISMATCH",
+      `upstream build produced unexpected Windows sidecars: ${unexpected.join(", ")}`
+    );
+  }
+
+  const outputDirectory = join(out, "bin");
+  await mkdir(outputDirectory, { recursive: true });
+  for (const name of expectedFiles) {
+    const source = join(sourceDirectory, name);
+    try {
+      const metadata = await stat(source);
+      if (!metadata.isFile()) {
+        throw new Error("not a file");
+      }
+    } catch {
+      fail("RUNTIME_BUILD_CLOSURE_MISMATCH", `upstream build did not produce ${source}`);
+    }
+    await copyFile(source, join(outputDirectory, name));
+  }
+}
+
+function runtimeFromLock(lock: RuntimeLockV1, out: string): VerifiedRuntime {
+  const spec = lock.platforms[WINDOWS_PLATFORM];
+  return {
+    platform: WINDOWS_PLATFORM,
+    root: out,
+    source: lock.source,
+    artifactState: spec.artifactState,
+    files: spec.files,
+    license: lock.licenseResult.spdx,
+    contractHash: lock.contractHash,
+    runtimeClosure: spec.runtimeClosure,
+    cyclonedxPath: lock.cyclonedxPath,
+    nodePkgTarget: spec.nodePkgTarget,
+    toolchain: lock.toolchain,
+  };
+}
+
+async function generateSbom(out: string, lockPath: string, baseRepositoryRoot: string): Promise<void> {
+  await run(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      join(baseRepositoryRoot, "scripts", "runtime", "generate-sbom.ts"),
+      "--lock",
+      lockPath,
+      "--out",
+      join(out, "sbom", "runtime.cdx.json"),
+    ],
+    baseRepositoryRoot
+  );
+}
+
+export async function buildFromSource(
+  options: BuildFromSourceOptions,
+  overrides: BuildFromSourceOverrides = {}
+): Promise<VerifiedRuntime> {
+  const sourceRoot = resolve(options.sourceRoot);
+  const out = resolve(options.out);
+  const pin = overrides.pin ?? defaultPin;
+  const runCommand = overrides.runCommand ?? run;
+  const resolvePnpm =
+    overrides.resolvePnpmCommand ??
+    (() =>
+      resolvePnpmCommandForEnvironment(
+        overrides.environment ?? process.env,
+        overrides.platform ?? process.platform
+      ));
+  const lockPath = resolve(overrides.lockPath ?? runtimeLockPath);
+  const lockLoader = overrides.loadRuntimeLock ?? loadRuntimeLock;
+  const runtimeVerifier = overrides.verifyRuntime ?? verifyRuntime;
+  const nodeVersion = overrides.nodeVersion ?? process.versions.node;
+  const baseRepositoryRoot = overrides.repositoryRoot ?? repositoryRoot;
+  const writeSbom =
+    overrides.generateSbom ??
+    ((runtimeRoot: string, pinnedLockPath: string) =>
+      generateSbom(runtimeRoot, pinnedLockPath, baseRepositoryRoot));
+
+  if (options.platform !== WINDOWS_PLATFORM) {
+    fail("RUNTIME_PLATFORM_NOT_BUILT", `source builds currently support only ${WINDOWS_PLATFORM}`);
+  }
+
+  await verifyPinnedSourceCheckout(sourceRoot, pin, { runCommand });
+  await verifyToolchain(sourceRoot, runCommand, resolvePnpm, nodeVersion);
+
+  const lock = await lockLoader(lockPath);
+  if (lock.licenseResult.spdx !== pin.license) {
+    fail(
+      "RUNTIME_LOCK_LICENSE_MISMATCH",
+      `runtime lock must declare ${pin.license}, got ${lock.licenseResult.spdx}`
+    );
+  }
+
+  await runPnpm(
+    sourceRoot,
+    ["run", "verify-runtime-closure"],
+    runCommand,
+    resolvePnpm
+  );
+  await runPnpm(
+    sourceRoot,
+    ["exec", "tsx", "scripts/build-exe-for-python-sdk.ts", "--targets", WINDOWS_TARGET],
+    runCommand,
+    resolvePnpm
+  );
+  await stageWindowsRuntime(sourceRoot, out);
+  await writeSbom(out, lockPath);
+
+  const runtime = runtimeFromLock(lock, out);
+  return runtimeVerifier(runtime);
 }
 
 function usage(): string {
@@ -102,12 +476,13 @@ function usage(): string {
     "Usage: node --experimental-strip-types scripts/runtime/build-from-source.ts [flags]",
     "",
     "  --source-root <path>  Pinned DSH source checkout.",
-    "  --platform <key>      win32-x64, linux-x64, linux-arm64, or darwin-arm64.",
+    "  --platform <key>      Only win32-x64 is source-built in this release.",
     "  --out <path>          Output runtime root.",
     "  --help                Show this help.",
     "",
-    `Build prerequisites: Node ${toolchain.node}, pnpm ${toolchain.pnpm}, Python ${toolchain.python}, Rust ${toolchain.rust}.`,
-    "The source must be pinned to dsh-v0.1.2-alpha.5 at db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5.",
+    `Build prerequisites: Node ${REQUIRED_NODE_MAJOR} and pnpm ${REQUIRED_PNPM}.`,
+    `The source must be pinned to ${DSH_TAG} at ${DSH_COMMIT}.`,
+    `The source pnpm lock must hash to ${EXPECTED_SOURCE_LOCK_SHA256}.`,
   ].join("\n");
 }
 
@@ -125,38 +500,27 @@ if (import.meta.main) {
   if (values.help) {
     console.log(usage());
   } else {
-    const sourceRoot = values["source-root"]
-      ? resolve(values["source-root"])
-      : undefined;
-    const platform =
-      values.platform === undefined
-        ? currentPlatform()
-        : values.platform === "win32-x64" ||
-            values.platform === "linux-x64" ||
-            values.platform === "linux-arm64" ||
-            values.platform === "darwin-arm64"
-          ? values.platform
-          : undefined;
-    if (!sourceRoot || !platform || !values.out) {
+    const platform = values.platform ?? currentPlatform();
+    if (!values["source-root"] || !values.out || ![
+      "win32-x64",
+      "linux-x64",
+      "linux-arm64",
+      "darwin-arm64",
+    ].includes(platform)) {
       console.error(usage());
       process.exitCode = 1;
-      } else {
-      try {
-        verifyToolchain();
-        verifySource(sourceRoot);
-        await verifySourceLock(sourceRoot);
-        const target = targets[platform];
-        console.log(
-          `building ${target} from ${DSH_TAG} (${DSH_COMMIT}) into ${resolve(values.out)}`
-        );
-        console.error(
-          "RUNTIME_BUILD_NOT_IMPLEMENTED_ON_THIS_HOST: native runner build is required"
-        );
-        process.exitCode = 1;
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
-        process.exitCode = 1;
-      }
+    } else {
+      buildFromSource({
+        sourceRoot: values["source-root"],
+        platform: platform as PlatformKey,
+        out: values.out,
+      })
+        .then((runtime) => console.log(`runtime built: ${runtime.platform}`))
+        .catch((error: unknown) => {
+          const code = error instanceof RuntimeBuildError ? `${error.code}: ` : "";
+          console.error(`${code}${error instanceof Error ? error.message : String(error)}`);
+          process.exitCode = 1;
+        });
     }
   }
 }

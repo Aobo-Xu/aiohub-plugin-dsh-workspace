@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import {
   type PlatformKey,
@@ -12,6 +12,7 @@ import {
   type VerifiedRuntime,
   resolveRuntime,
 } from "./resolve-runtime.ts";
+import { buildFromSource, verifyPinnedSourceCheckout } from "./build-from-source.ts";
 import { verifyRuntime } from "./verify-runtime.ts";
 
 const DSH_TAG = "dsh-v0.1.2-alpha.5";
@@ -40,6 +41,103 @@ const runtimeClosures = {
 
 function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+async function createSourceFixture(options: {
+  packageVersion?: string;
+  packageLicense?: string;
+  packageManager?: string;
+  lockContent?: string;
+} = {}): Promise<{
+  sourceRoot: string;
+  pin: {
+    tag: string;
+    commit: string;
+    version: string;
+    packageManager: string;
+    sourceLockSha256: string;
+    license: string;
+  };
+}> {
+  const sourceRoot = await mkdtemp(join(tmpdir(), "dsh-source-fixture-"));
+  const lockContent = options.lockContent ?? "lockfileVersion: '9.0'\n";
+  const packageVersion = options.packageVersion ?? "0.1.2-alpha.5";
+  const packageLicense = options.packageLicense ?? "MIT";
+  const packageManager = options.packageManager ?? "pnpm@11.7.0";
+  const tag = "fixture-dsh-tag";
+
+  await writeFile(join(sourceRoot, "pnpm-lock.yaml"), lockContent);
+  await writeFile(
+    join(sourceRoot, "package.json"),
+    `${JSON.stringify({
+      name: "@deepseek-ai/dsh-root",
+      version: packageVersion,
+      license: packageLicense,
+      packageManager,
+    }, null, 2)}\n`
+  );
+
+  for (const args of [
+    ["init"],
+    ["config", "user.email", "runtime-test@example.invalid"],
+    ["config", "user.name", "Runtime Test"],
+    ["add", "pnpm-lock.yaml", "package.json"],
+    ["commit", "-m", "fixture"],
+    ["tag", tag],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: sourceRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+  }
+
+  const commitResult = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: sourceRoot,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  expect(commitResult.status, `${commitResult.stdout}${commitResult.stderr}`).toBe(0);
+
+  return {
+    sourceRoot,
+    pin: {
+      tag,
+      commit: commitResult.stdout.trim(),
+      version: packageVersion,
+      packageManager,
+      sourceLockSha256: sha256(lockContent),
+      license: packageLicense,
+    },
+  };
+}
+
+async function withEnvironment<T>(
+  overrides: Record<string, string | undefined>,
+  work: () => Promise<T>
+): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await work();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 async function writeRuntimeFixture(root: string): Promise<{
@@ -288,6 +386,244 @@ describe("runtime lock verification", () => {
 });
 
 describe("runtime supply-chain CLI", () => {
+  it("rejects a source checkout when the pinned lock digest drifts", async () => {
+    const { sourceRoot, pin } = await createSourceFixture();
+    try {
+      await writeFile(join(sourceRoot, "pnpm-lock.yaml"), "lockfileVersion: '10.0'\n");
+
+      await expect(
+        verifyPinnedSourceCheckout(sourceRoot, pin, {
+          runCommand: async (command, args, cwd) => {
+            if (
+              command === "git" &&
+              args[0] === "status" &&
+              args[1] === "--short"
+            ) {
+              return "";
+            }
+
+            const result = spawnSync(command, [...args], {
+              cwd,
+              encoding: "utf8",
+              timeout: 30_000,
+            });
+            expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+            return result.stdout.trim();
+          },
+        })
+      ).rejects.toMatchObject({ code: "RUNTIME_SOURCE_LOCK_MISMATCH" });
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a Windows source build when pnpm exposes only a command shim", async () => {
+    const { sourceRoot, pin } = await createSourceFixture();
+    const out = join(sourceRoot, "runtime-out");
+    const lock = {
+      licenseResult: { spdx: "MIT" },
+      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      platforms: {
+        "win32-x64": {
+          artifactState: { status: "built" },
+          files: [],
+          runtimeClosure: runtimeClosures["win32-x64"],
+          nodePkgTarget: "node24-win-x64",
+        },
+      },
+      cyclonedxPath: "sbom/runtime.cdx.json",
+      contractHash: CONTRACT_HASH,
+      toolchain: {
+        node: "24",
+        pnpm: "11.7.0",
+        python: "3.10",
+        rust: "1.89.0",
+      },
+    } as const;
+
+    const commands: { command: string; args: readonly string[] }[] = [];
+
+    try {
+      await expect(
+        withEnvironment(
+          {
+            npm_execpath: undefined,
+            PNPM_HOME: undefined,
+          },
+          () =>
+            buildFromSource(
+              { sourceRoot, platform: "win32-x64", out },
+              {
+                pin,
+                nodeVersion: "24.1.0",
+                runCommand: async (command, args, cwd) => {
+                  commands.push({ command, args });
+                  if (command === "git") {
+                    const result = spawnSync(command, [...args], {
+                      cwd,
+                      encoding: "utf8",
+                      timeout: 30_000,
+                    });
+                    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+                    return result.stdout.trim();
+                  }
+                  if (args.at(-1) === "--version") {
+                    return "11.7.0";
+                  }
+                  return "";
+                },
+                loadRuntimeLock: async () => lock,
+                generateSbom: async () => undefined,
+                verifyRuntime: async (runtime) => runtime,
+              }
+            )
+        )
+      ).rejects.toMatchObject({
+        code: "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
+      });
+      expect(commands.some(({ command }) => /pnpm\.cmd/i.test(command))).toBe(false);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the JavaScript pnpm entrypoint behind a Windows command shim via PNPM_HOME", async () => {
+    const { sourceRoot, pin } = await createSourceFixture();
+    const out = join(sourceRoot, "runtime-out");
+    const setupRoot = await mkdtemp(join(tmpdir(), "dsh-pnpm-home-"));
+    const pnpmHome = join(setupRoot, "node_modules", ".bin");
+    const pnpmEntrypoint = join(setupRoot, "node_modules", "pnpm", "bin", "pnpm.mjs");
+    const sbomContent = JSON.stringify({
+      bomFormat: "CycloneDX",
+      specVersion: "1.6",
+    });
+    const expectedRuntime = "expected-runtime";
+    const expectedRg = "expected-rg";
+    const recorded: { command: string; args: readonly string[] }[] = [];
+    const lock = {
+      licenseResult: { spdx: "MIT" },
+      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      platforms: {
+        "win32-x64": {
+          artifactState: { status: "built" },
+          files: [
+            {
+              path: "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+              sha256: sha256(expectedRuntime),
+              executable: true,
+            },
+            {
+              path: "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
+              sha256: sha256(expectedRg),
+              executable: true,
+            },
+            {
+              path: "sbom/runtime.cdx.json",
+              sha256: sha256(sbomContent),
+              executable: false,
+            },
+          ],
+          runtimeClosure: runtimeClosures["win32-x64"],
+          nodePkgTarget: "node24-win-x64",
+        },
+      },
+      cyclonedxPath: "sbom/runtime.cdx.json",
+      contractHash: CONTRACT_HASH,
+      toolchain: {
+        node: "24",
+        pnpm: "11.7.0",
+        python: "3.10",
+        rust: "1.89.0",
+      },
+    } as const;
+
+    try {
+      await mkdir(dirname(pnpmEntrypoint), { recursive: true });
+      await writeFile(pnpmEntrypoint, "");
+
+      const runtime = await withEnvironment(
+        {
+          npm_execpath: "C:\\tools\\pnpm.cmd",
+          PNPM_HOME: pnpmHome,
+        },
+        () =>
+          buildFromSource(
+            { sourceRoot, platform: "win32-x64", out },
+            {
+              pin,
+              nodeVersion: "24.1.0",
+              runCommand: async (command, args, cwd) => {
+                recorded.push({ command, args });
+                if (command === "git") {
+                  const result = spawnSync(command, [...args], {
+                    cwd,
+                    encoding: "utf8",
+                    timeout: 30_000,
+                  });
+                  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+                  return result.stdout.trim();
+                }
+                if (args.at(-1) === "--version") {
+                  return "11.7.0";
+                }
+                if (args.some((value) => value.includes("build-exe-for-python-sdk.ts"))) {
+                  await mkdir(join(sourceRoot, "dist-exe"), { recursive: true });
+                  await writeFile(
+                    join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64.exe"),
+                    expectedRuntime
+                  );
+                  await writeFile(
+                    join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
+                    expectedRg
+                  );
+                }
+                return "";
+              },
+              loadRuntimeLock: async () => lock,
+              generateSbom: async (runtimeRoot) => {
+                await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
+                await writeFile(join(runtimeRoot, "sbom", "runtime.cdx.json"), sbomContent);
+              },
+              verifyRuntime: async (runtime) => runtime,
+            }
+          )
+      );
+
+      expect(runtime.platform).toBe("win32-x64");
+      const pnpmCalls = recorded.filter(({ command }) => command !== "git");
+      expect(pnpmCalls.length).toBeGreaterThanOrEqual(3);
+      expect(pnpmCalls[0]).toMatchObject({
+        command: process.execPath,
+        args: [pnpmEntrypoint, "--version"],
+      });
+      expect(
+        pnpmCalls.every(
+          ({ command, args }) =>
+            !/pnpm\.cmd/i.test(command) &&
+            args.every((value) => !/pnpm\.cmd/i.test(value))
+        )
+      ).toBe(true);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(setupRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a source checkout when tracked files are dirty", async () => {
+    const { sourceRoot, pin } = await createSourceFixture();
+    try {
+      const packagePath = join(sourceRoot, "package.json");
+      const packageJson = await readFile(packagePath, "utf8");
+      await writeFile(packagePath, `${packageJson.trim()}\n \n`);
+
+      await expect(
+        verifyPinnedSourceCheckout(sourceRoot, pin)
+      ).rejects.toMatchObject({ code: "RUNTIME_SOURCE_DIRTY" });
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("prints build prerequisites for source builds", () => {
     const result = spawnSync(
       "node",
@@ -298,29 +634,191 @@ describe("runtime supply-chain CLI", () => {
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("--source-root");
     expect(result.stdout).toContain("pnpm 11.7.0");
-    expect(result.stdout).toContain("Python 3.10");
+    expect(result.stdout).toContain("e12083149a77f790d39b64d018b6b8745c6a7aa95777ecb73e0a2f5ed5fdd0d9");
   });
 
-  it("fails closed with a stable prerequisite diagnostic", () => {
-    const result = spawnSync(
-      "node",
-      [
-        "--experimental-strip-types",
-        "scripts/runtime/build-from-source.ts",
-        "--source-root",
-        repositoryRoot,
-        "--platform",
-        "win32-x64",
-        "--out",
-        ".artifacts/runtime-prerequisite-check",
-      ],
-      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
-    );
+  it("rejects a source build when staged binaries drift from the runtime lock", async () => {
+    const { sourceRoot, pin } = await createSourceFixture();
+    const out = join(sourceRoot, "runtime-out");
+    const runtimeContent = "actual-runtime";
+    const rgContent = "expected-rg";
+    const sbomContent = JSON.stringify({
+      bomFormat: "CycloneDX",
+      specVersion: "1.6",
+      metadata: {
+        component: {
+          type: "application",
+          name: "deepseek-harness-runtime",
+          version: "0.1.2-alpha.5",
+          licenses: [{ license: { id: "MIT" } }],
+          properties: [
+            {
+              name: "aio:runtime-source",
+              value: "project-built-from-official-source",
+            },
+            {
+              name: "aio:contract-hash",
+              value: CONTRACT_HASH,
+            },
+          ],
+        },
+      },
+    });
 
-    expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
-    expect(result.stderr).toContain(
-      "RUNTIME_BUILD_PREREQUISITE_MISMATCH:"
-    );
+    try {
+      const lock = {
+        schemaVersion: 1,
+        version: "0.1.2-alpha.5",
+        tag: DSH_TAG,
+        commit: DSH_COMMIT,
+        publishedAt: "2026-09-02T07:48:33Z",
+        source: {
+          kind: "project-built-from-official-source",
+          tag: DSH_TAG,
+          commit: DSH_COMMIT,
+        },
+        officialWheel: {
+          status: "unavailable",
+          distributions: ["deepseek-harness-sdk", "deepseek-harness-runtime-bin"],
+          reason: "not-published-for-0.1.2a5",
+        },
+        license: "MIT",
+        licenseResult: {
+          spdx: "MIT",
+          source: "upstream-package",
+        },
+        cyclonedxPath: "sbom/runtime.cdx.json",
+        profileVersion: "dsh-runtime-profile-v1",
+        contractHash: CONTRACT_HASH,
+        aioSemverRange: ">=0.7.0-alpha.4",
+        toolchain: {
+          node: "24",
+          pnpm: "11.7.0",
+          python: "3.10",
+          rust: "1.89.0",
+        },
+        platforms: {
+          "win32-x64": {
+            platform: "win32-x64",
+            arch: "x64",
+            artifactState: { status: "built" },
+            nodePkgTarget: "node24-win-x64",
+            pythonTarget: "win_amd64",
+            osFloor: { kind: "windows", version: "10" },
+            runtimeClosure: [
+              "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+              "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
+            ],
+            files: [
+              {
+                path: "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+                sha256: sha256("expected-runtime"),
+                executable: true,
+              },
+              {
+                path: "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
+                sha256: sha256(rgContent),
+                executable: true,
+              },
+              {
+                path: "sbom/runtime.cdx.json",
+                sha256: sha256(sbomContent),
+                executable: false,
+              },
+            ],
+          },
+          "linux-x64": {
+            platform: "linux-x64",
+            arch: "x64",
+            artifactState: { status: "not-built", reason: "native-runner-required" },
+            nodePkgTarget: "node24-linux-x64",
+            pythonTarget: "manylinux_2_28_x86_64",
+            osFloor: { kind: "glibc", version: "2.28" },
+            runtimeClosure: [
+              "bin/deepseek-harness-sdk-runtime-linux-x64",
+              "bin/deepseek-harness-sdk-runtime-linux-x64-rg",
+            ],
+            files: [],
+          },
+          "linux-arm64": {
+            platform: "linux-arm64",
+            arch: "arm64",
+            artifactState: { status: "not-built", reason: "native-runner-required" },
+            nodePkgTarget: "node24-linux-arm64",
+            pythonTarget: "manylinux_2_28_aarch64",
+            osFloor: { kind: "glibc", version: "2.28" },
+            runtimeClosure: [
+              "bin/deepseek-harness-sdk-runtime-linux-arm64",
+              "bin/deepseek-harness-sdk-runtime-linux-arm64-rg",
+            ],
+            files: [],
+          },
+          "darwin-arm64": {
+            platform: "darwin-arm64",
+            arch: "arm64",
+            artifactState: { status: "not-built", reason: "native-runner-required" },
+            nodePkgTarget: "node24-macos-arm64",
+            pythonTarget: "macosx_14_0_arm64",
+            osFloor: { kind: "macos", version: "14.0" },
+            runtimeClosure: [
+              "bin/deepseek-harness-sdk-runtime-macos-arm64",
+              "bin/deepseek-harness-sdk-runtime-macos-arm64-rg",
+              "bin/deepseek-harness-sdk-runtime-macos-arm64-spawn-helper",
+            ],
+            files: [],
+          },
+        },
+      } as const;
+
+      const runCommand = async (
+        command: string,
+        args: readonly string[],
+        cwd: string
+      ): Promise<string> => {
+        if (command === "git") {
+          const result = spawnSync(command, [...args], {
+            cwd,
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+          expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+          return result.stdout.trim();
+        }
+        if (args.at(-1) === "--version") {
+          return "11.7.0";
+        }
+        if (args.some((value) => value.includes("build-exe-for-python-sdk.ts")) || args[0] === "exec") {
+          await mkdir(join(sourceRoot, "dist-exe"), { recursive: true });
+          await writeFile(
+            join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64.exe"),
+            runtimeContent
+          );
+          await writeFile(
+            join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
+            rgContent
+          );
+        }
+        return "";
+      };
+
+      await expect(
+        buildFromSource(
+          { sourceRoot, platform: "win32-x64", out },
+          {
+            pin,
+            nodeVersion: "24.1.0",
+            runCommand,
+            loadRuntimeLock: async () => lock,
+            generateSbom: async (runtimeRoot) => {
+              await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
+              await writeFile(join(runtimeRoot, "sbom", "runtime.cdx.json"), sbomContent);
+            },
+          }
+        )
+      ).rejects.toMatchObject({ code: "RUNTIME_CHECKSUM_MISMATCH" });
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
   });
 
   it("generates a CycloneDX document from the runtime lock", async () => {
