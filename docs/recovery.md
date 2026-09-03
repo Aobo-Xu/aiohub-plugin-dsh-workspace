@@ -12,3 +12,9 @@ turn identifier.
 Upgrade, failed rollback, and uninstall preserve plugin-owned session data
 until the user explicitly removes it. Uninstall removes the installed plugin
 payload, not user data. Recovery diagnostics are redacted before export.
+
+End-to-end crash coverage uses the `AIO_DSH_E2E_CRASH_TOKEN` environment
+variable as an explicit test hook. When it is unset, prompt input containing a
+crash token has no effect; the interrupted-turn ledger is written atomically,
+and a torn ledger is quarantined to `interrupted-turns.json.corrupt` instead of
+blocking cold recovery.
