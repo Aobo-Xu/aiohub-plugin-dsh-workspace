@@ -12,13 +12,15 @@ permissions:
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - windows-latest
+        include:
+          - os: windows-latest
+            platform: win32-x64
+            support: supported
 
     steps:
       - name: Check out repository

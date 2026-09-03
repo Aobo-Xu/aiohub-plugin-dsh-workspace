@@ -38,8 +38,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build protocol
-        run: bun run build:protocol
+      - name: Build protocol and manifest-selected Supervisor
+        run: >-
+          bun run build:protocol &&
+          cargo build -p aio-dsh-supervisor --release
 
       - name: Package platform
         run: >-
@@ -53,6 +55,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-coding-workspace-0.1.0-${{ matrix.platform }}${{ matrix.support == 'preview' && '-preview' || '' }}.zip
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
           if-no-files-found: error
           retention-days: 7
