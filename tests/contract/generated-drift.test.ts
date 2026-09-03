@@ -52,6 +52,9 @@ function runGenerator(outputRoot: string, check: boolean) {
     {
       cwd: repositoryRoot,
       encoding: "utf8",
+      // Cold builds stream large compiler diagnostics; the default 1 MiB
+      // buffer turns a healthy build into a spurious ENOBUFS failure.
+      maxBuffer: 50 * 1024 * 1024,
     },
   );
 }
