@@ -83,6 +83,9 @@ pub struct RuntimeLockV1 {
     pub contract_hash: String,
     pub aio_semver_range: String,
     pub toolchain: RuntimeToolchain,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
     pub platforms: BTreeMap<String, serde_json::Value>,
 }
 
@@ -198,7 +201,9 @@ impl RuntimeValidator {
                 lock.license_result.spdx
             )));
         }
-        if !lock.platforms.contains_key(platform.as_str()) {
+        if !lock.platforms.contains_key(platform.as_str())
+            && lock.platform.as_deref() != Some(platform.as_str())
+        {
             return Err(RuntimeValidationError::Platform(
                 platform.as_str().to_owned(),
             ));

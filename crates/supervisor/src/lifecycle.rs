@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{lease::Lease, recovery::Recovery};
 
@@ -16,6 +17,7 @@ pub enum LifecycleState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LifecycleEvent {
     DemandStart,
+    StartFailed,
     PrewarmAcquired,
     ControllerReleased,
     DshBusy,
@@ -45,6 +47,7 @@ pub struct LifecycleMachine {
     lease: Lease,
     effects: Vec<LifecycleEffect>,
     generation: u64,
+    process_generation_prefix: String,
     domain_generation_id: Option<String>,
     interactions: Vec<String>,
     recovery: Recovery,
@@ -53,12 +56,17 @@ pub struct LifecycleMachine {
 
 impl LifecycleMachine {
     pub fn new(idle_grace: Duration) -> Self {
+        let marker = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         Self {
             state: LifecycleState::Stopped,
             idle_grace,
             lease: Lease::default(),
             effects: Vec::new(),
             generation: 0,
+            process_generation_prefix: format!("{}-{marker}", std::process::id()),
             domain_generation_id: None,
             interactions: Vec::new(),
             recovery: Recovery::new(),
@@ -69,6 +77,7 @@ impl LifecycleMachine {
     pub fn apply(&mut self, event: LifecycleEvent) -> Vec<LifecycleEffect> {
         let effects = match event {
             LifecycleEvent::DemandStart => self.start(false),
+            LifecycleEvent::StartFailed => self.start_failed(),
             LifecycleEvent::PrewarmAcquired => self.start(true),
             LifecycleEvent::ControllerReleased => self.release_controller(),
             LifecycleEvent::DshBusy => self.mark_busy(),
@@ -117,7 +126,10 @@ impl LifecycleMachine {
                 self.state = LifecycleState::Starting;
                 self.quiescent = false;
                 self.generation = self.generation.saturating_add(1);
-                self.domain_generation_id = Some(format!("dsh-generation-{}", self.generation));
+                self.domain_generation_id = Some(format!(
+                    "dsh-generation-{}-{}",
+                    self.process_generation_prefix, self.generation
+                ));
                 vec![LifecycleEffect::Spawn]
             }
             LifecycleState::Unavailable
@@ -135,6 +147,16 @@ impl LifecycleMachine {
         } else {
             Vec::new()
         }
+    }
+
+    fn start_failed(&mut self) -> Vec<LifecycleEffect> {
+        if matches!(self.state, LifecycleState::Starting) {
+            self.state = LifecycleState::Stopped;
+            self.domain_generation_id = None;
+            self.quiescent = false;
+            self.interactions.clear();
+        }
+        Vec::new()
     }
 
     fn mark_busy(&mut self) -> Vec<LifecycleEffect> {
