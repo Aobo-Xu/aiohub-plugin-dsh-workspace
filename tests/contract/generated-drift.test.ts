@@ -97,6 +97,9 @@ function runIsolatedCargo(outputRoot: string, arguments_: string[]) {
   return spawnSync("cargo", arguments_, {
     cwd: outputRoot,
     encoding: "utf8",
+    // Cold builds stream large compiler diagnostics; the default 1 MiB
+    // buffer turns a healthy build into a spurious ENOBUFS failure.
+    maxBuffer: 50 * 1024 * 1024,
     env: {
       ...process.env,
       CARGO_TARGET_DIR: join(repositoryRoot, "target", "protocol-isolated-fixture"),
