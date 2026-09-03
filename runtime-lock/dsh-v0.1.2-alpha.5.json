@@ -9,6 +9,13 @@
     "tag": "dsh-v0.1.2-alpha.5",
     "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
   },
+  "sourcePatches": [
+    {
+      "path": "patches/dsh-alpha5-runtime-closure.patch",
+      "sha256": "66435c27835a9117bda23e51fc27f593fb0b7f854148e9b0d7161ed56689d549",
+      "reason": "Restore two required workspace peers omitted from the alpha.5 executable deploy closure."
+    }
+  ],
   "officialWheel": {
     "status": "unavailable",
     "distributions": [
@@ -52,7 +59,7 @@
       "files": [
         {
           "path": "bin/deepseek-harness-sdk-runtime-win-x64.exe",
-          "sha256": "2bb0507875a36b291177fbcb13aef011a9d78ca1e57d09343a0415394fa16aac",
+          "sha256": "b4c535691aa05b523f08f4d9ba858a0b47ad0c662ae9251a974ebafb4fada871",
           "executable": true
         },
         {
@@ -62,7 +69,7 @@
         },
         {
           "path": "sbom/runtime.cdx.json",
-          "sha256": "0584cb7362bd9d6c378dd673983b9a0016c607a2bf0fc5a3488bc38e691cd69c",
+          "sha256": "0f6d81e13d40928f7be68e8639fe43378187741409ba28e8294c4b00cf781ed6",
           "executable": false
         }
       ]

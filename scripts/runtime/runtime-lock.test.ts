@@ -12,12 +12,17 @@ import {
   type VerifiedRuntime,
   resolveRuntime,
 } from "./resolve-runtime.ts";
-import { buildFromSource, verifyPinnedSourceCheckout } from "./build-from-source.ts";
+import {
+  buildFromSource,
+  persistBuiltRuntimeHashes,
+  verifyPinnedSourceCheckout,
+} from "./build-from-source.ts";
 import { verifyRuntime } from "./verify-runtime.ts";
 
 const DSH_TAG = "dsh-v0.1.2-alpha.5";
 const DSH_COMMIT = "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
-const CONTRACT_HASH = "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519";
+const CONTRACT_HASH =
+  "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519";
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runtimeClosures = {
   "win32-x64": [
@@ -43,12 +48,68 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-async function createSourceFixture(options: {
-  packageVersion?: string;
-  packageLicense?: string;
-  packageManager?: string;
-  lockContent?: string;
-} = {}): Promise<{
+it("persists the emitted runtime closure hashes for the release being packaged", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dsh-runtime-lock-record-"));
+  const lockPath = join(root, "runtime-lock.json");
+  const runtimeRoot = join(root, "runtime");
+  const runtime = "freshly-built-runtime";
+  const rg = "freshly-built-rg";
+  const sbom = "freshly-built-sbom";
+  try {
+    await mkdir(join(runtimeRoot, "bin"), { recursive: true });
+    await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
+    await writeFile(join(runtimeRoot, "bin", "deepseek-harness-sdk-runtime-win-x64.exe"), runtime);
+    await writeFile(join(runtimeRoot, "bin", "deepseek-harness-sdk-runtime-win-x64-rg.exe"), rg);
+    await writeFile(join(runtimeRoot, "sbom", "runtime.cdx.json"), sbom);
+    await writeFile(lockPath, JSON.stringify({
+      schemaVersion: 1,
+      version: "0.1.2-alpha.5",
+      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      licenseResult: { spdx: "MIT" },
+      contractHash: CONTRACT_HASH,
+      cyclonedxPath: "sbom/runtime.cdx.json",
+      toolchain: { node: "24", pnpm: "11.7.0", python: "3.10", rust: "1.89.0" },
+      platforms: {
+        "win32-x64": {
+          platform: "win32-x64",
+          arch: "x64",
+          artifactState: { status: "built" },
+          nodePkgTarget: "node24-win-x64",
+          pythonTarget: "win_amd64",
+          osFloor: { kind: "windows", version: "10" },
+          runtimeClosure: runtimeClosures["win32-x64"],
+          files: [
+            { path: "bin/deepseek-harness-sdk-runtime-win-x64.exe", sha256: "0".repeat(64), executable: true },
+            { path: "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe", sha256: "0".repeat(64), executable: true },
+            { path: "sbom/runtime.cdx.json", sha256: "0".repeat(64), executable: false },
+          ],
+        },
+      },
+    }, null, 2));
+
+    await persistBuiltRuntimeHashes(lockPath, runtimeRoot, "win32-x64");
+
+    const recorded = JSON.parse(await readFile(lockPath, "utf8")) as {
+      platforms: { "win32-x64": { files: Array<{ path: string; sha256: string }> } };
+    };
+    expect(recorded.platforms["win32-x64"].files).toEqual([
+      { path: "bin/deepseek-harness-sdk-runtime-win-x64.exe", sha256: sha256(runtime), executable: true },
+      { path: "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe", sha256: sha256(rg), executable: true },
+      { path: "sbom/runtime.cdx.json", sha256: sha256(sbom), executable: false },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function createSourceFixture(
+  options: {
+    packageVersion?: string;
+    packageLicense?: string;
+    packageManager?: string;
+    lockContent?: string;
+  } = {},
+): Promise<{
   sourceRoot: string;
   pin: {
     tag: string;
@@ -69,12 +130,16 @@ async function createSourceFixture(options: {
   await writeFile(join(sourceRoot, "pnpm-lock.yaml"), lockContent);
   await writeFile(
     join(sourceRoot, "package.json"),
-    `${JSON.stringify({
-      name: "@deepseek-ai/dsh-root",
-      version: packageVersion,
-      license: packageLicense,
-      packageManager,
-    }, null, 2)}\n`
+    `${JSON.stringify(
+      {
+        name: "@deepseek-ai/dsh-root",
+        version: packageVersion,
+        license: packageLicense,
+        packageManager,
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   for (const args of [
@@ -98,7 +163,10 @@ async function createSourceFixture(options: {
     encoding: "utf8",
     timeout: 30_000,
   });
-  expect(commitResult.status, `${commitResult.stdout}${commitResult.stderr}`).toBe(0);
+  expect(
+    commitResult.status,
+    `${commitResult.stdout}${commitResult.stderr}`,
+  ).toBe(0);
 
   return {
     sourceRoot,
@@ -115,7 +183,7 @@ async function createSourceFixture(options: {
 
 async function withEnvironment<T>(
   overrides: Record<string, string | undefined>,
-  work: () => Promise<T>
+  work: () => Promise<T>,
 ): Promise<T> {
   const previous = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(overrides)) {
@@ -159,7 +227,10 @@ async function writeRuntimeFixture(root: string): Promise<{
         version: "0.1.2-alpha.5",
         licenses: [{ license: { id: "Apache-2.0" } }],
         properties: [
-          { name: "aio:runtime-source", value: "project-built-from-official-source" },
+          {
+            name: "aio:runtime-source",
+            value: "project-built-from-official-source",
+          },
           { name: "aio:contract-hash", value: CONTRACT_HASH },
         ],
       },
@@ -167,11 +238,11 @@ async function writeRuntimeFixture(root: string): Promise<{
   });
   await writeFile(
     join(root, "bin", "deepseek-harness-sdk-runtime-win-x64.exe"),
-    runtimeContent
+    runtimeContent,
   );
   await writeFile(
     join(root, "bin", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
-    rgContent
+    rgContent,
   );
   await writeFile(join(root, "sbom", "runtime.cdx.json"), sbomContent);
   return {
@@ -192,7 +263,7 @@ async function fixtureRuntime(
     | "unsupported-license"
     | "contract-mismatch"
     | "pending-native-build"
-    | "artifact-state-mismatch"
+    | "artifact-state-mismatch",
 ): Promise<VerifiedRuntime> {
   const root = await mkdtemp(join(tmpdir(), "dsh-runtime-"));
   const hashes = await writeRuntimeFixture(root);
@@ -281,7 +352,9 @@ describe("runtime lock verification", () => {
   const roots: string[] = [];
 
   afterAll(async () => {
-    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+    await Promise.all(
+      roots.map((root) => rm(root, { recursive: true, force: true })),
+    );
   });
 
   it.each([
@@ -341,11 +414,16 @@ describe("runtime lock verification", () => {
   it("locks every supported platform to the frozen alpha.5 source", async () => {
     const lockPath = new URL(
       "../../runtime-lock/dsh-v0.1.2-alpha.5.json",
-      import.meta.url
+      import.meta.url,
     );
     const lock = JSON.parse(await readFile(lockPath, "utf8")) as {
       schemaVersion: number;
       source: RuntimeSource;
+      sourcePatches: readonly {
+        path: string;
+        sha256: string;
+        reason: string;
+      }[];
       platforms: Record<
         keyof typeof runtimeClosures,
         {
@@ -362,6 +440,14 @@ describe("runtime lock verification", () => {
       tag: DSH_TAG,
       commit: DSH_COMMIT,
     });
+    expect(lock.sourcePatches).toEqual([
+      {
+        path: "patches/dsh-alpha5-runtime-closure.patch",
+        sha256:
+          "66435c27835a9117bda23e51fc27f593fb0b7f854148e9b0d7161ed56689d549",
+        reason: expect.stringContaining("required workspace peers"),
+      },
+    ]);
     expect(Object.keys(lock.platforms)).toEqual([
       "win32-x64",
       "linux-x64",
@@ -370,16 +456,22 @@ describe("runtime lock verification", () => {
     ]);
     for (const [platform, closure] of Object.entries(runtimeClosures)) {
       const isWindows = platform === "win32-x64";
-      expect(lock.platforms[platform as keyof typeof runtimeClosures]).toMatchObject({
+      expect(
+        lock.platforms[platform as keyof typeof runtimeClosures],
+      ).toMatchObject({
         artifactState: isWindows
           ? { status: "built" }
           : { status: "not-built", reason: "native-runner-required" },
         runtimeClosure: closure,
       });
       if (isWindows) {
-        expect(lock.platforms[platform as keyof typeof runtimeClosures].files.length).toBe(3);
+        expect(
+          lock.platforms[platform as keyof typeof runtimeClosures].files.length,
+        ).toBe(3);
       } else {
-        expect(lock.platforms[platform as keyof typeof runtimeClosures].files).toEqual([]);
+        expect(
+          lock.platforms[platform as keyof typeof runtimeClosures].files,
+        ).toEqual([]);
       }
     }
   });
@@ -389,7 +481,10 @@ describe("runtime supply-chain CLI", () => {
   it("rejects a source checkout when the pinned lock digest drifts", async () => {
     const { sourceRoot, pin } = await createSourceFixture();
     try {
-      await writeFile(join(sourceRoot, "pnpm-lock.yaml"), "lockfileVersion: '10.0'\n");
+      await writeFile(
+        join(sourceRoot, "pnpm-lock.yaml"),
+        "lockfileVersion: '10.0'\n",
+      );
 
       await expect(
         verifyPinnedSourceCheckout(sourceRoot, pin, {
@@ -410,7 +505,7 @@ describe("runtime supply-chain CLI", () => {
             expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
             return result.stdout.trim();
           },
-        })
+        }),
       ).rejects.toMatchObject({ code: "RUNTIME_SOURCE_LOCK_MISMATCH" });
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
@@ -422,7 +517,11 @@ describe("runtime supply-chain CLI", () => {
     const out = join(sourceRoot, "runtime-out");
     const lock = {
       licenseResult: { spdx: "MIT" },
-      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      source: {
+        kind: "project-built-from-official-source",
+        tag: DSH_TAG,
+        commit: DSH_COMMIT,
+      },
       platforms: {
         "win32-x64": {
           artifactState: { status: "built" },
@@ -464,7 +563,10 @@ describe("runtime supply-chain CLI", () => {
                       encoding: "utf8",
                       timeout: 30_000,
                     });
-                    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+                    expect(
+                      result.status,
+                      `${result.stdout}${result.stderr}`,
+                    ).toBe(0);
                     return result.stdout.trim();
                   }
                   if (args.at(-1) === "--version") {
@@ -475,13 +577,15 @@ describe("runtime supply-chain CLI", () => {
                 loadRuntimeLock: async () => lock,
                 generateSbom: async () => undefined,
                 verifyRuntime: async (runtime) => runtime,
-              }
-            )
-        )
+              },
+            ),
+        ),
       ).rejects.toMatchObject({
         code: "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
       });
-      expect(commands.some(({ command }) => /pnpm\.cmd/i.test(command))).toBe(false);
+      expect(commands.some(({ command }) => /pnpm\.cmd/i.test(command))).toBe(
+        false,
+      );
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
     }
@@ -492,7 +596,13 @@ describe("runtime supply-chain CLI", () => {
     const out = join(sourceRoot, "runtime-out");
     const setupRoot = await mkdtemp(join(tmpdir(), "dsh-pnpm-home-"));
     const pnpmHome = join(setupRoot, "node_modules", ".bin");
-    const pnpmEntrypoint = join(setupRoot, "node_modules", "pnpm", "bin", "pnpm.mjs");
+    const pnpmEntrypoint = join(
+      setupRoot,
+      "node_modules",
+      "pnpm",
+      "bin",
+      "pnpm.mjs",
+    );
     const sbomContent = JSON.stringify({
       bomFormat: "CycloneDX",
       specVersion: "1.6",
@@ -502,7 +612,11 @@ describe("runtime supply-chain CLI", () => {
     const recorded: { command: string; args: readonly string[] }[] = [];
     const lock = {
       licenseResult: { spdx: "MIT" },
-      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      source: {
+        kind: "project-built-from-official-source",
+        tag: DSH_TAG,
+        commit: DSH_COMMIT,
+      },
       platforms: {
         "win32-x64": {
           artifactState: { status: "built" },
@@ -560,21 +674,38 @@ describe("runtime supply-chain CLI", () => {
                     encoding: "utf8",
                     timeout: 30_000,
                   });
-                  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+                  expect(
+                    result.status,
+                    `${result.stdout}${result.stderr}`,
+                  ).toBe(0);
                   return result.stdout.trim();
                 }
                 if (args.at(-1) === "--version") {
                   return "11.7.0";
                 }
-                if (args.some((value) => value.includes("build-exe-for-python-sdk.ts"))) {
-                  await mkdir(join(sourceRoot, "dist-exe"), { recursive: true });
+                if (
+                  args.some((value) =>
+                    value.includes("build-exe-for-python-sdk.ts"),
+                  )
+                ) {
+                  await mkdir(join(sourceRoot, "dist-exe"), {
+                    recursive: true,
+                  });
                   await writeFile(
-                    join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64.exe"),
-                    expectedRuntime
+                    join(
+                      sourceRoot,
+                      "dist-exe",
+                      "deepseek-harness-sdk-runtime-win-x64.exe",
+                    ),
+                    expectedRuntime,
                   );
                   await writeFile(
-                    join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
-                    expectedRg
+                    join(
+                      sourceRoot,
+                      "dist-exe",
+                      "deepseek-harness-sdk-runtime-win-x64-rg.exe",
+                    ),
+                    expectedRg,
                   );
                 }
                 return "";
@@ -582,11 +713,14 @@ describe("runtime supply-chain CLI", () => {
               loadRuntimeLock: async () => lock,
               generateSbom: async (runtimeRoot) => {
                 await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
-                await writeFile(join(runtimeRoot, "sbom", "runtime.cdx.json"), sbomContent);
+                await writeFile(
+                  join(runtimeRoot, "sbom", "runtime.cdx.json"),
+                  sbomContent,
+                );
               },
               verifyRuntime: async (runtime) => runtime,
-            }
-          )
+            },
+          ),
       );
 
       expect(runtime.platform).toBe("win32-x64");
@@ -600,8 +734,8 @@ describe("runtime supply-chain CLI", () => {
         pnpmCalls.every(
           ({ command, args }) =>
             !/pnpm\.cmd/i.test(command) &&
-            args.every((value) => !/pnpm\.cmd/i.test(value))
-        )
+            args.every((value) => !/pnpm\.cmd/i.test(value)),
+        ),
       ).toBe(true);
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
@@ -617,7 +751,7 @@ describe("runtime supply-chain CLI", () => {
       await writeFile(packagePath, `${packageJson.trim()}\n \n`);
 
       await expect(
-        verifyPinnedSourceCheckout(sourceRoot, pin)
+        verifyPinnedSourceCheckout(sourceRoot, pin),
       ).rejects.toMatchObject({ code: "RUNTIME_SOURCE_DIRTY" });
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
@@ -627,14 +761,20 @@ describe("runtime supply-chain CLI", () => {
   it("prints build prerequisites for source builds", () => {
     const result = spawnSync(
       "node",
-      ["--experimental-strip-types", "scripts/runtime/build-from-source.ts", "--help"],
-      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
+      [
+        "--experimental-strip-types",
+        "scripts/runtime/build-from-source.ts",
+        "--help",
+      ],
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 },
     );
 
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("--source-root");
     expect(result.stdout).toContain("pnpm 11.7.0");
-    expect(result.stdout).toContain("e12083149a77f790d39b64d018b6b8745c6a7aa95777ecb73e0a2f5ed5fdd0d9");
+    expect(result.stdout).toContain(
+      "e12083149a77f790d39b64d018b6b8745c6a7aa95777ecb73e0a2f5ed5fdd0d9",
+    );
   });
 
   it("rejects a source build when staged binaries drift from the runtime lock", async () => {
@@ -679,7 +819,10 @@ describe("runtime supply-chain CLI", () => {
         },
         officialWheel: {
           status: "unavailable",
-          distributions: ["deepseek-harness-sdk", "deepseek-harness-runtime-bin"],
+          distributions: [
+            "deepseek-harness-sdk",
+            "deepseek-harness-runtime-bin",
+          ],
           reason: "not-published-for-0.1.2a5",
         },
         license: "MIT",
@@ -730,7 +873,10 @@ describe("runtime supply-chain CLI", () => {
           "linux-x64": {
             platform: "linux-x64",
             arch: "x64",
-            artifactState: { status: "not-built", reason: "native-runner-required" },
+            artifactState: {
+              status: "not-built",
+              reason: "native-runner-required",
+            },
             nodePkgTarget: "node24-linux-x64",
             pythonTarget: "manylinux_2_28_x86_64",
             osFloor: { kind: "glibc", version: "2.28" },
@@ -743,7 +889,10 @@ describe("runtime supply-chain CLI", () => {
           "linux-arm64": {
             platform: "linux-arm64",
             arch: "arm64",
-            artifactState: { status: "not-built", reason: "native-runner-required" },
+            artifactState: {
+              status: "not-built",
+              reason: "native-runner-required",
+            },
             nodePkgTarget: "node24-linux-arm64",
             pythonTarget: "manylinux_2_28_aarch64",
             osFloor: { kind: "glibc", version: "2.28" },
@@ -756,7 +905,10 @@ describe("runtime supply-chain CLI", () => {
           "darwin-arm64": {
             platform: "darwin-arm64",
             arch: "arm64",
-            artifactState: { status: "not-built", reason: "native-runner-required" },
+            artifactState: {
+              status: "not-built",
+              reason: "native-runner-required",
+            },
             nodePkgTarget: "node24-macos-arm64",
             pythonTarget: "macosx_14_0_arm64",
             osFloor: { kind: "macos", version: "14.0" },
@@ -773,7 +925,7 @@ describe("runtime supply-chain CLI", () => {
       const runCommand = async (
         command: string,
         args: readonly string[],
-        cwd: string
+        cwd: string,
       ): Promise<string> => {
         if (command === "git") {
           const result = spawnSync(command, [...args], {
@@ -787,15 +939,26 @@ describe("runtime supply-chain CLI", () => {
         if (args.at(-1) === "--version") {
           return "11.7.0";
         }
-        if (args.some((value) => value.includes("build-exe-for-python-sdk.ts")) || args[0] === "exec") {
+        if (
+          args.some((value) => value.includes("build-exe-for-python-sdk.ts")) ||
+          args[0] === "exec"
+        ) {
           await mkdir(join(sourceRoot, "dist-exe"), { recursive: true });
           await writeFile(
-            join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64.exe"),
-            runtimeContent
+            join(
+              sourceRoot,
+              "dist-exe",
+              "deepseek-harness-sdk-runtime-win-x64.exe",
+            ),
+            runtimeContent,
           );
           await writeFile(
-            join(sourceRoot, "dist-exe", "deepseek-harness-sdk-runtime-win-x64-rg.exe"),
-            rgContent
+            join(
+              sourceRoot,
+              "dist-exe",
+              "deepseek-harness-sdk-runtime-win-x64-rg.exe",
+            ),
+            rgContent,
           );
         }
         return "";
@@ -811,10 +974,13 @@ describe("runtime supply-chain CLI", () => {
             loadRuntimeLock: async () => lock,
             generateSbom: async (runtimeRoot) => {
               await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
-              await writeFile(join(runtimeRoot, "sbom", "runtime.cdx.json"), sbomContent);
+              await writeFile(
+                join(runtimeRoot, "sbom", "runtime.cdx.json"),
+                sbomContent,
+              );
             },
-          }
-        )
+          },
+        ),
       ).rejects.toMatchObject({ code: "RUNTIME_CHECKSUM_MISMATCH" });
     } finally {
       await rm(sourceRoot, { recursive: true, force: true });
@@ -828,7 +994,11 @@ describe("runtime supply-chain CLI", () => {
     const lock = {
       schemaVersion: 1,
       version: "0.1.2-alpha.5",
-      source: { kind: "project-built-from-official-source", tag: DSH_TAG, commit: DSH_COMMIT },
+      source: {
+        kind: "project-built-from-official-source",
+        tag: DSH_TAG,
+        commit: DSH_COMMIT,
+      },
       license: "MIT",
       contractHash: CONTRACT_HASH,
       platforms: {
@@ -850,20 +1020,28 @@ describe("runtime supply-chain CLI", () => {
         "--out",
         output,
       ],
-      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 },
     );
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
 
     const sbom = JSON.parse(await readFile(output, "utf8")) as {
       bomFormat: string;
       specVersion: string;
-      metadata: { component: { name: string; version: string; licenses: { license: { id: string } }[] } };
+      metadata: {
+        component: {
+          name: string;
+          version: string;
+          licenses: { license: { id: string } }[];
+        };
+      };
     };
     expect(sbom.bomFormat).toBe("CycloneDX");
     expect(sbom.specVersion).toBe("1.6");
     expect(sbom.metadata.component.name).toBe("deepseek-harness-runtime");
     expect(sbom.metadata.component.version).toBe("0.1.2-alpha.5");
-    expect(sbom.metadata.component.licenses).toEqual([{ license: { id: "MIT" } }]);
+    expect(sbom.metadata.component.licenses).toEqual([
+      { license: { id: "MIT" } },
+    ]);
 
     await rm(root, { recursive: true, force: true });
   });
@@ -877,7 +1055,7 @@ describe("runtime supply-chain CLI", () => {
     const result = spawnSync(
       "node",
       ["--experimental-strip-types", script, "--help"],
-      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 }
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 },
     );
 
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
@@ -887,13 +1065,13 @@ describe("runtime supply-chain CLI", () => {
 
   it("routes package runtime scripts through Node instead of Bun", async () => {
     const packageJson = JSON.parse(
-      await readFile(new URL("../../package.json", import.meta.url), "utf8")
+      await readFile(new URL("../../package.json", import.meta.url), "utf8"),
     );
 
     for (const name of ["runtime:resolve-current", "build:dsh-source"]) {
       expect(packageJson.scripts[name]).toBeDefined();
       expect(packageJson.scripts[name]).toMatch(
-        /^node --experimental-strip-types scripts\/runtime\//
+        /^node --experimental-strip-types scripts\/runtime\//,
       );
       expect(packageJson.scripts[name]).not.toContain("bun");
     }

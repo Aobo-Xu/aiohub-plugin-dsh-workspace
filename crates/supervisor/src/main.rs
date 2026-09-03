@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -57,6 +58,10 @@ fn run() -> Result<u8, MainError> {
     let redaction = config.redaction.clone();
     let platform = config.platform;
     let interrupted_turns_path = interrupted_turns_path(&config.plugin_data_dir);
+    let dsh_home = config.plugin_data_dir.join("data").join("dsh-home");
+    let runtime_executable = config
+        .runtime_root
+        .join("deepseek-harness-sdk-runtime-win-x64.exe");
     let supervisor = Supervisor::new(config)?;
     let mut driver = StdioDriver::new(
         supervisor,
@@ -64,6 +69,8 @@ fn run() -> Result<u8, MainError> {
         redaction,
         std::env::var(ENV_CRASH_TOKEN).ok(),
         interrupted_turns_path,
+        runtime_executable,
+        dsh_home,
     )?;
     driver.run(io::stdin().lock(), io::stdout().lock())
 }
@@ -262,6 +269,8 @@ struct StdioDriver {
     controller_leases: BTreeMap<String, LeaseRecord>,
     interrupted_turns_path: PathBuf,
     interrupted_turns: InterruptedTurnLedger,
+    runtime_executable: PathBuf,
+    dsh_home: PathBuf,
     next_lease_id: AtomicU64,
     next_wire_error_id: u64,
     initialized: bool,
@@ -274,6 +283,8 @@ impl StdioDriver {
         redaction: RedactionPolicy,
         crash_token: Option<String>,
         interrupted_turns_path: PathBuf,
+        runtime_executable: PathBuf,
+        dsh_home: PathBuf,
     ) -> Result<Self, MainError> {
         Ok(Self {
             supervisor,
@@ -284,6 +295,8 @@ impl StdioDriver {
             controller_leases: BTreeMap::new(),
             interrupted_turns: load_interrupted_turns(&interrupted_turns_path)?,
             interrupted_turns_path,
+            runtime_executable,
+            dsh_home,
             next_lease_id: AtomicU64::new(1),
             next_wire_error_id: 1,
             initialized: false,
@@ -407,6 +420,13 @@ impl StdioDriver {
                             result_data.insert("snapshot".to_owned(), data["data"].clone());
                         }
                         Some("event") => match data["data"]["kind"].as_str() {
+                            Some("turn-completed") => {
+                                result_data.insert("terminal".to_owned(), json!("completed"));
+                                result_data.insert(
+                                    "output".to_owned(),
+                                    data["data"]["data"]["output"].clone(),
+                                );
+                            }
                             Some("error") => {
                                 error = Some(data["data"]["data"].clone());
                             }
@@ -864,7 +884,104 @@ impl StdioDriver {
             });
         }
 
+        if input.get("provider").is_some() {
+            return self.handle_coding_turn(envelope, session_id, lease_id, turn_id, input);
+        }
+
         self.handle_accepting_mutation(envelope, session_id, lease_id, Some(turn_id), event_kind)
+    }
+
+    fn handle_coding_turn(
+        &mut self,
+        envelope: Envelope<CommandPayload>,
+        session_id: String,
+        lease_id: String,
+        turn_id: String,
+        input: serde_json::Value,
+    ) -> Result<CommandOutcome, MainError> {
+        let prompt = required_json_string(&input, "prompt")?;
+        let workspace = PathBuf::from(required_json_string(&input, "workspace")?);
+        let provider = input
+            .get("provider")
+            .ok_or_else(|| MainError::Config("missing provider".to_owned()))?;
+        let base_url = required_json_string(provider, "baseUrl")?;
+        let api_key = required_json_string(provider, "apiKey")?;
+
+        if !base_url.starts_with("http://127.0.0.1:") && !base_url.starts_with("http://localhost:")
+        {
+            return Ok(CommandOutcome::frame(self.error_event_frame(
+                envelope.seq,
+                format!("turn-error-{turn_id}"),
+                envelope.correlation_id,
+                self.current_generation().to_owned(),
+                "provider-not-loopback",
+                "native release E2E provider must use loopback",
+            )?));
+        }
+        fs::create_dir_all(&self.dsh_home)?;
+        fs::create_dir_all(&workspace)?;
+
+        let result = Command::new(&self.runtime_executable)
+            .args(["--profile", "headless", &prompt])
+            .current_dir(&workspace)
+            .env("DSH_HOME", &self.dsh_home)
+            .env("DSH_TELEMETRY_DISABLED", "1")
+            .env("DEEPSEEK_API_KEY", api_key)
+            .env("DEEPSEEK_BASE_URL", base_url)
+            .output();
+        let output = match result {
+            Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+                .map_err(|error| {
+                    MainError::Config(format!("runtime stdout was not UTF-8: {error}"))
+                })?
+                .trim()
+                .to_owned(),
+            Ok(output) => {
+                let message = self
+                    .redaction
+                    .redact_text(&String::from_utf8_lossy(&output.stderr));
+                return Ok(CommandOutcome::frame(self.error_event_frame(
+                    envelope.seq,
+                    format!("turn-error-{turn_id}"),
+                    envelope.correlation_id,
+                    self.current_generation().to_owned(),
+                    "runtime-turn-failed",
+                    message.trim(),
+                )?));
+            }
+            Err(error) => {
+                return Ok(CommandOutcome::frame(self.error_event_frame(
+                    envelope.seq,
+                    format!("turn-error-{turn_id}"),
+                    envelope.correlation_id,
+                    self.current_generation().to_owned(),
+                    "runtime-spawn-failed",
+                    &error.to_string(),
+                )?));
+            }
+        };
+
+        Ok(CommandOutcome {
+            frames: vec![
+                self.response_frame(
+                    &envelope,
+                    ResponsePayload::Session(SessionResult::Accepted(CommandAccepted {
+                        accepted: true,
+                    })),
+                )?,
+                self.session_event_frame(SessionEventSpec {
+                    seq: envelope.seq,
+                    message_id: format!("turn-completed-{turn_id}"),
+                    correlation_id: envelope.correlation_id,
+                    generation_id: self.current_generation().to_owned(),
+                    session_id: Some(session_id),
+                    turn_id: Some(turn_id),
+                    kind: "turn-completed".to_owned(),
+                    data: json!({ "leaseId": lease_id, "output": output }),
+                })?,
+            ],
+            exit_code: None,
+        })
     }
 
     fn handle_accepting_mutation(
@@ -1225,6 +1342,15 @@ fn required_host_param(params: &serde_json::Value, name: &str) -> Result<String,
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| format!("missing required resident Sidecar param {name}"))
+}
+
+fn required_json_string(value: &serde_json::Value, name: &str) -> Result<String, MainError> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| MainError::Config(format!("missing required coding turn field {name}")))
 }
 
 fn load_interrupted_turns(path: &std::path::Path) -> Result<InterruptedTurnLedger, MainError> {

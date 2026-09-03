@@ -4,10 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 export type PlatformKey =
-  | "win32-x64"
-  | "linux-x64"
-  | "linux-arm64"
-  | "darwin-arm64";
+  "win32-x64" | "linux-x64" | "linux-arm64" | "darwin-arm64";
 
 export type RuntimeSource =
   | {
@@ -97,6 +94,11 @@ export type VerifiedRuntime = {
   platform: PlatformKey;
   root: string;
   source: RuntimeSource;
+  sourcePatches?: readonly {
+    path: string;
+    sha256: string;
+    reason: string;
+  }[];
   artifactState: RuntimeArtifactState;
   files: readonly RuntimeFile[];
   license: string;
@@ -108,19 +110,18 @@ export type VerifiedRuntime = {
 };
 
 export const DSH_TAG = "dsh-v0.1.2-alpha.5" as const;
-export const DSH_COMMIT =
-  "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5" as const;
+export const DSH_COMMIT = "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5" as const;
 export const DSH_VERSION = "0.1.2-alpha.5" as const;
 export const DSH_CONTRACT_HASH =
   "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519" as const;
 
 const repositoryRoot = dirname(
-  dirname(dirname(fileURLToPath(import.meta.url)))
+  dirname(dirname(fileURLToPath(import.meta.url))),
 );
 const lockPath = join(
   repositoryRoot,
   "runtime-lock",
-  "dsh-v0.1.2-alpha.5.json"
+  "dsh-v0.1.2-alpha.5.json",
 );
 
 const platformKeys = [
@@ -161,6 +162,15 @@ function assertRuntimeLock(payload: unknown, path: string): RuntimeLockV1 {
   ) {
     throw new Error(`RUNTIME_LOCK_INVALID: ${path}`);
   }
+  if (
+    lock.sourcePatches?.length !== 1 ||
+    lock.sourcePatches[0]?.path !==
+      "patches/dsh-alpha5-runtime-closure.patch" ||
+    lock.sourcePatches[0]?.sha256 !==
+      "66435c27835a9117bda23e51fc27f593fb0b7f854148e9b0d7161ed56689d549"
+  ) {
+    throw new Error(`RUNTIME_LOCK_INVALID: unpinned source patch in ${path}`);
+  }
   for (const key of platformKeys) {
     const platform = lock.platforms?.[key];
     const artifactState = platform?.artifactState;
@@ -185,7 +195,7 @@ function assertRuntimeLock(payload: unknown, path: string): RuntimeLockV1 {
 
 export function officialWheelStatus(
   lock: RuntimeLockV1,
-  platform: PlatformKey
+  platform: PlatformKey,
 ): OfficialWheelStatus {
   if (lock.source.kind === "official-wheel") {
     return {
@@ -203,7 +213,7 @@ export function officialWheelStatus(
 
 export async function resolveRuntime(
   platform: PlatformKey,
-  options: { root?: string } = {}
+  options: { root?: string } = {},
 ): Promise<VerifiedRuntime> {
   const lock = await loadRuntimeLock();
   const spec = lock.platforms[platform];
@@ -212,7 +222,9 @@ export async function resolveRuntime(
   }
   return {
     platform,
-    root: resolve(options.root ?? join(repositoryRoot, ".artifacts", "runtime")),
+    root: resolve(
+      options.root ?? join(repositoryRoot, ".artifacts", "runtime"),
+    ),
     source: lock.source,
     artifactState: spec.artifactState,
     files: spec.files,
