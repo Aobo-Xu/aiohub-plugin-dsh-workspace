@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use aio_dsh_protocol::{
-    CURRENT_PROTOCOL_VERSION, CommandAccepted, CommandEnvelope, CommandPayload, ControllerLease,
-    Envelope, LeaseMode, NotificationEnvelope, NotificationPayload, PlatformFacts, PlatformKey,
-    ResponseEnvelope, ResponsePayload, RuntimeEvent, RuntimeProvenance, RuntimeState,
-    RuntimeStateNotification, SandboxBackend, SandboxLevel, SandboxStatus, SessionCommand,
-    SessionNotification, SessionResult,
+    AcquireSessionRequest, CURRENT_PROTOCOL_VERSION, CancelRequest, CommandAccepted,
+    CommandEnvelope, CommandPayload, ControllerLease, Envelope, LeaseMode, NotificationEnvelope,
+    NotificationPayload, PlatformFacts, PlatformKey, ResponseEnvelope, ResponsePayload,
+    RuntimeEvent, RuntimeProvenance, RuntimeState, RuntimeStateNotification, SandboxBackend,
+    SandboxLevel, SandboxStatus, SessionCommand, SessionNotification, SessionResult,
+    SnapshotRequest, SteerRequest, SubmitPromptRequest, TransferControllerRequest,
 };
 use aio_dsh_supervisor::{
     PlatformTarget, RedactionPolicy, Supervisor, SupervisorConfig,
@@ -339,6 +340,31 @@ impl StdioDriver {
                 )?
             }
             "shutdown" => self.handle_shutdown(command.id, None)?,
+            "session.acquire"
+            | "session.submitPrompt"
+            | "session.cancel"
+            | "session.steer"
+            | "session.transferController"
+            | "session.snapshot" => {
+                match resident_session_command(&command.method, &command.params) {
+                    Ok(session_command) => {
+                        let generation = self.current_generation().to_owned();
+                        self.handle_command(Envelope::new(
+                            generation,
+                            command.id,
+                            CommandPayload::Session(session_command),
+                        ))?
+                    }
+                    Err(message) => CommandOutcome::frame(self.error_event_frame(
+                        command.id,
+                        format!("host-command-{}", command.id),
+                        None,
+                        self.current_generation().to_owned(),
+                        "invalid-host-params",
+                        &message,
+                    )?),
+                }
+            }
             _ => CommandOutcome::frame(self.error_event_frame(
                 command.id,
                 format!("host-command-{}", command.id),
@@ -358,37 +384,68 @@ impl StdioDriver {
     ) -> Result<CommandOutcome, MainError> {
         let mut state = None;
         let mut error = None;
+        let mut result_data = serde_json::Map::new();
         for frame in &outcome.frames {
             let value: serde_json::Value = serde_json::from_str(frame)
                 .map_err(|parse_error| MainError::Config(parse_error.to_string()))?;
             let payload = &value["payload"];
-            if payload["kind"] == "state" {
-                state = payload["data"]["state"].as_str().map(str::to_owned);
-            }
-            if payload["kind"] == "session"
-                && payload["data"]["kind"] == "event"
-                && payload["data"]["data"]["kind"] == "error"
-            {
-                error = Some(payload["data"]["data"]["data"].clone());
+            match payload["kind"].as_str() {
+                Some("state") => {
+                    state = payload["data"]["state"].as_str().map(str::to_owned);
+                }
+                Some("session") => {
+                    let data = &payload["data"];
+                    match data["kind"].as_str() {
+                        Some("lease") => {
+                            result_data.insert("lease".to_owned(), data["data"].clone());
+                        }
+                        Some("accepted") => {
+                            result_data
+                                .insert("accepted".to_owned(), data["data"]["accepted"].clone());
+                        }
+                        Some("snapshot") => {
+                            result_data.insert("snapshot".to_owned(), data["data"].clone());
+                        }
+                        Some("event") => match data["data"]["kind"].as_str() {
+                            Some("error") => {
+                                error = Some(data["data"]["data"].clone());
+                            }
+                            Some("command-rejected") => {
+                                result_data.insert(
+                                    "rejection".to_owned(),
+                                    json!({ "code": data["data"]["data"]["code"] }),
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+                Some("error") => {
+                    error = Some(payload["data"].clone());
+                }
+                _ => {}
             }
         }
         let frame = if let Some(error) = error {
             json!({ "id": id, "type": "error", "data": error })
-        } else if let Some(state) = state {
-            json!({
-                "id": id,
-                "type": "result",
-                "data": {
-                    "state": state,
-                    "domainGenerationId": self.current_generation(),
-                }
-            })
         } else {
-            json!({
-                "id": id,
-                "type": "error",
-                "data": { "code": "resident-command-no-terminal-result" }
-            })
+            result_data.insert(
+                "domainGenerationId".to_owned(),
+                json!(self.current_generation()),
+            );
+            if let Some(state) = state {
+                result_data.insert("state".to_owned(), json!(state));
+            }
+            if result_data.len() <= 1 {
+                json!({
+                    "id": id,
+                    "type": "error",
+                    "data": { "code": "resident-command-no-terminal-result" }
+                })
+            } else {
+                json!({ "id": id, "type": "result", "data": result_data })
+            }
         };
         Ok(CommandOutcome {
             frames: vec![frame.to_string()],
@@ -1098,6 +1155,76 @@ fn interrupted_turns_path(plugin_data_dir: &std::path::Path) -> PathBuf {
     plugin_data_dir
         .join("runtime")
         .join(INTERRUPTED_TURN_LEDGER_FILE)
+}
+
+fn resident_session_command(
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<SessionCommand, String> {
+    let session_id = required_host_param(params, "sessionId")?;
+    match method {
+        "session.acquire" => {
+            let view_id = params
+                .get("viewId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("host")
+                .to_owned();
+            let requested_mode = match params
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("controller")
+            {
+                "controller" => LeaseMode::Controller,
+                "observer" => LeaseMode::Observer,
+                other => return Err(format!("unsupported lease mode {other}")),
+            };
+            Ok(SessionCommand::Acquire(AcquireSessionRequest {
+                session_id,
+                view_id,
+                requested_mode,
+            }))
+        }
+        "session.submitPrompt" => Ok(SessionCommand::SubmitPrompt(SubmitPromptRequest {
+            session_id,
+            lease_id: required_host_param(params, "leaseId")?,
+            turn_id: required_host_param(params, "turnId")?,
+            input: params.get("input").cloned().unwrap_or_else(|| json!({})),
+        })),
+        "session.steer" => Ok(SessionCommand::Steer(SteerRequest {
+            session_id,
+            lease_id: required_host_param(params, "leaseId")?,
+            turn_id: required_host_param(params, "turnId")?,
+            input: params.get("input").cloned().unwrap_or_else(|| json!({})),
+        })),
+        "session.cancel" => Ok(SessionCommand::Cancel(CancelRequest {
+            session_id,
+            lease_id: required_host_param(params, "leaseId")?,
+            turn_id: required_host_param(params, "turnId")?,
+        })),
+        "session.transferController" => Ok(SessionCommand::TransferController(
+            TransferControllerRequest {
+                session_id,
+                lease_id: required_host_param(params, "leaseId")?,
+                target_view_id: required_host_param(params, "targetViewId")?,
+            },
+        )),
+        "session.snapshot" => Ok(SessionCommand::Snapshot(SnapshotRequest {
+            session_id,
+            cursor: params
+                .get("cursor")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        })),
+        other => Err(format!("unsupported resident Sidecar method {other}")),
+    }
+}
+
+fn required_host_param(params: &serde_json::Value, name: &str) -> Result<String, String> {
+    params
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("missing required resident Sidecar param {name}"))
 }
 
 fn load_interrupted_turns(path: &std::path::Path) -> Result<InterruptedTurnLedger, MainError> {

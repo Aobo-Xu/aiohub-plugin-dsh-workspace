@@ -1046,3 +1046,155 @@ fn corrupt_interrupted_turn_ledger_is_quarantined_and_startup_recovers() {
     let (status, _stderr) = harness.finish_with_stderr();
     assert!(status.success());
 }
+
+fn resident_command(id: u64, method: &str, params: Value) -> String {
+    json!({ "id": id, "method": method, "params": params }).to_string()
+}
+
+#[test]
+fn resident_session_commands_round_trip_through_the_host_envelope() {
+    let fixture = RuntimeFixture::new("resident-session");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    harness.send(&resident_command(
+        1,
+        "initialize",
+        json!({ "hostContext": { "apiVersion": 3, "sidecarProtocolVersion": 3 } }),
+    ));
+    let init = harness.recv_json();
+    assert_eq!(init["type"], json!("result"));
+    assert_eq!(init["data"]["state"], json!("ready"));
+    let generation = init["data"]["domainGenerationId"]
+        .as_str()
+        .expect("generation")
+        .to_owned();
+
+    harness.send(&resident_command(
+        2,
+        "session.acquire",
+        json!({ "sessionId": "s-1", "viewId": "view-a", "mode": "controller" }),
+    ));
+    let acquire = harness.recv_json();
+    assert_eq!(acquire["type"], json!("result"));
+    assert_eq!(acquire["data"]["domainGenerationId"], json!(generation));
+    let lease_id = acquire["data"]["lease"]["leaseId"]
+        .as_str()
+        .expect("lease id")
+        .to_owned();
+    assert_eq!(
+        acquire["data"]["lease"]["mode"],
+        json!("controller"),
+        "resident acquire must surface the granted lease mode"
+    );
+
+    harness.send(&resident_command(
+        3,
+        "session.submitPrompt",
+        json!({
+            "sessionId": "s-1",
+            "leaseId": lease_id,
+            "turnId": "turn-1",
+            "input": { "prompt": "add a hello-world function" }
+        }),
+    ));
+    let submit = harness.recv_json();
+    assert_eq!(submit["type"], json!("result"));
+    assert_eq!(submit["data"]["accepted"], json!(true));
+
+    harness.send(&resident_command(
+        4,
+        "session.cancel",
+        json!({ "sessionId": "s-1", "leaseId": lease_id, "turnId": "turn-1" }),
+    ));
+    let cancel = harness.recv_json();
+    assert_eq!(cancel["type"], json!("result"));
+    assert_eq!(cancel["data"]["accepted"], json!(true));
+
+    harness.send(&resident_command(5, "shutdown", json!({})));
+    let stopped = harness.recv_json();
+    assert_eq!(stopped["type"], json!("result"));
+    assert_eq!(stopped["data"]["state"], json!("stopped"));
+    let (status, stderr) = harness.finish_with_stderr();
+    assert!(status.success());
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn resident_session_commands_enforce_initialization_and_lease_fencing() {
+    let fixture = RuntimeFixture::new("resident-fencing");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    harness.send(&resident_command(
+        1,
+        "session.acquire",
+        json!({ "sessionId": "s-1", "viewId": "view-a", "mode": "controller" }),
+    ));
+    let early = harness.recv_json();
+    assert_eq!(early["type"], json!("error"));
+    assert_eq!(early["data"]["code"], json!("not-initialized"));
+
+    harness.send(&resident_command(
+        2,
+        "initialize",
+        json!({ "hostContext": { "apiVersion": 3, "sidecarProtocolVersion": 3 } }),
+    ));
+    let init = harness.recv_json();
+    assert_eq!(init["data"]["state"], json!("ready"));
+
+    harness.send(&resident_command(
+        3,
+        "session.acquire",
+        json!({ "sessionId": "s-1", "viewId": "view-a", "mode": "controller" }),
+    ));
+    let acquire = harness.recv_json();
+    let lease_id = acquire["data"]["lease"]["leaseId"]
+        .as_str()
+        .expect("lease id")
+        .to_owned();
+
+    harness.send(&resident_command(
+        4,
+        "session.acquire",
+        json!({ "sessionId": "s-1", "viewId": "view-b", "mode": "controller" }),
+    ));
+    let duplicate = harness.recv_json();
+    assert_eq!(duplicate["type"], json!("result"));
+    assert_eq!(duplicate["data"]["accepted"], json!(false));
+    assert_eq!(
+        duplicate["data"]["rejection"]["code"],
+        json!("lease-rejected")
+    );
+
+    harness.send(&resident_command(
+        5,
+        "session.submitPrompt",
+        json!({
+            "sessionId": "s-1",
+            "leaseId": "lease-stale",
+            "turnId": "turn-1",
+            "input": { "prompt": "ignored" }
+        }),
+    ));
+    let stale = harness.recv_json();
+    assert_eq!(stale["data"]["accepted"], json!(false));
+    assert_eq!(stale["data"]["rejection"]["code"], json!("stale-lease"));
+
+    harness.send(&resident_command(
+        6,
+        "session.submitPrompt",
+        json!({
+            "sessionId": "s-1",
+            "leaseId": lease_id,
+            "turnId": "turn-2",
+            "input": { "prompt": "real work" }
+        }),
+    ));
+    let submit = harness.recv_json();
+    assert_eq!(submit["data"]["accepted"], json!(true));
+
+    harness.send(&resident_command(7, "shutdown", json!({})));
+    let stopped = harness.recv_json();
+    assert_eq!(stopped["data"]["state"], json!("stopped"));
+    let (status, _stderr) = harness.finish_with_stderr();
+    assert!(status.success());
+}
