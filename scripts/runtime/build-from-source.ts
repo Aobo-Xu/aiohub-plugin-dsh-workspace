@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -180,7 +180,11 @@ function resolvePnpmCommandForEnvironment(
   platform: NodeJS.Platform,
 ): PnpmCommand {
   const npmExecPath = environment.npm_execpath?.trim();
-  if (npmExecPath) {
+  const npmExecName = npmExecPath ? basename(npmExecPath).toLowerCase() : "";
+  const isPnpmExecPath = /^(?:pnpm|pnpm\.(?:js|cjs|mjs|cmd|exe))$/.test(
+    npmExecName,
+  );
+  if (npmExecPath && isPnpmExecPath) {
     const extension = extname(npmExecPath).toLowerCase();
     if (extension === ".js" || extension === ".cjs" || extension === ".mjs") {
       return { command: process.execPath, args: [npmExecPath] };

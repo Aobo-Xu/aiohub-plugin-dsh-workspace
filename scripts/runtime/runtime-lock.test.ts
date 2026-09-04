@@ -591,7 +591,7 @@ describe("runtime supply-chain CLI", () => {
     }
   });
 
-  it("resolves the JavaScript pnpm entrypoint behind a Windows command shim via PNPM_HOME", async () => {
+  it("ignores a non-pnpm npm_execpath and resolves pnpm via PNPM_HOME on Windows", async () => {
     const { sourceRoot, pin } = await createSourceFixture();
     const out = join(sourceRoot, "runtime-out");
     const setupRoot = await mkdtemp(join(tmpdir(), "dsh-pnpm-home-"));
@@ -657,7 +657,7 @@ describe("runtime supply-chain CLI", () => {
 
       const runtime = await withEnvironment(
         {
-          npm_execpath: "C:\\tools\\pnpm.cmd",
+          npm_execpath: "C:\\tools\\bun.exe",
           PNPM_HOME: pnpmHome,
         },
         () =>
@@ -733,8 +733,8 @@ describe("runtime supply-chain CLI", () => {
       expect(
         pnpmCalls.every(
           ({ command, args }) =>
-            !/pnpm\.cmd/i.test(command) &&
-            args.every((value) => !/pnpm\.cmd/i.test(value)),
+            !/bun\.exe/i.test(command) &&
+            args.every((value) => !/bun\.exe/i.test(value)),
         ),
       ).toBe(true);
     } finally {
@@ -971,6 +971,7 @@ describe("runtime supply-chain CLI", () => {
             pin,
             nodeVersion: "24.1.0",
             runCommand,
+            resolvePnpmCommand: () => ({ command: "pnpm", args: [] }),
             loadRuntimeLock: async () => lock,
             generateSbom: async (runtimeRoot) => {
               await mkdir(join(runtimeRoot, "sbom"), { recursive: true });
