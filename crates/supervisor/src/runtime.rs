@@ -273,6 +273,11 @@ fn validate_toolchain(lock: &RuntimeLockV1) -> Result<(), RuntimeValidationError
 
 fn validate_source(lock: &RuntimeLockV1) -> Result<(), RuntimeValidationError> {
     if lock.source.kind != "official-wheel"
+        || lock
+            .official_wheel
+            .as_ref()
+            .and_then(|wheel| wheel.status.as_deref())
+            != Some("available")
         || !lock
             .source
             .url

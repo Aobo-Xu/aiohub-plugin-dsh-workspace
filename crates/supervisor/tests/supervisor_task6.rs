@@ -217,6 +217,17 @@ fn runtime_validator_rejects_unsupported_platform_and_contract_mismatch() {
 }
 
 #[test]
+fn runtime_validator_rejects_an_unavailable_wheel() {
+    let root = TempRoot::new("validator-wheel-status");
+    let mut lock = lock_builder();
+    lock["officialWheel"]["status"] = serde_json::json!("unavailable");
+    assert!(
+        RuntimeValidator::validate(&write_lock(root.path(), &lock), PlatformTarget::Win32X64,)
+            .is_err()
+    );
+}
+
+#[test]
 fn runtime_validator_rejects_runtime_layout_that_escapes_its_root() {
     let root = TempRoot::new("validator-layout");
     let lock = write_lock(root.path(), &lock_builder());
