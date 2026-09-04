@@ -1,8 +1,11 @@
 # DSH Coding Workspace
 
 DSH Coding Workspace is an independent AIO Hub Sidecar plugin. Its first
-release supports **Windows x64 only** and ships the pinned DSH
-`0.1.2-alpha.5` runtime as an offline ZIP. It adds no Coding Workspace UI,
+release supports **Windows x64 only** and ships the DSH `v0.1.2-rc.1`
+official Windows wheel runtime as an offline ZIP. The versioned provenance is
+read only from `runtime-lock/dsh-runtime.json`; release code and tests do not
+embed the DSH version, so later upgrades update the lock and verified artifacts
+without changing the Supervisor or packager. It adds no Coding Workspace UI,
 marketplace flow, RAG, or Knowledge capability.
 
 Install the release ZIP through AIO Hub's plugin installer. The installer
@@ -15,6 +18,7 @@ For local AIO Hub development, create the intentionally untracked junction:
 bun run plugin:dsh:link
 ```
 
-The runtime source, verification metadata, license/SBOM, security boundaries,
+The wheel URL/hash, extracted-file hashes, verification metadata, upstream
+license/notices, SBOM, security boundaries,
 recovery behavior, and compatibility limits are documented in `docs/`. Before
 publishing, run `bun scripts/verify-release.ts` and `bun run package:platform`.

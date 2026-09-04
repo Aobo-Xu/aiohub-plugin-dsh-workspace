@@ -20,9 +20,9 @@ fn initialize_request() -> InitializeRequest {
         contract_hash: CONTRACT_HASH.to_owned(),
         runtime: RuntimeProvenance {
             component: "stdio-test-runtime".to_owned(),
-            version: "0.1.2-alpha.5".to_owned(),
+            version: "9.8.7-rc.6".to_owned(),
             build_id: "stdio-test-build".to_owned(),
-            source_revision: Some("db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5".to_owned()),
+            source_revision: Some("a66e4702047846cdaa10c66c9d3df3951f5ea70d".to_owned()),
         },
         platform: PlatformFacts {
             platform: PlatformKey::Win32X64,
@@ -93,7 +93,7 @@ impl RuntimeFixture {
         )
         .expect("write companion rg");
 
-        let runtime_lock_path = root.path().join("dsh-v0.1.2-alpha.5.json");
+        let runtime_lock_path = root.path().join("dsh-runtime.json");
         fs::write(
             &runtime_lock_path,
             serde_json::to_vec(&lock_builder()).expect("serialize lock"),
@@ -323,23 +323,23 @@ fn drain_diagnostics(stream: ChildStderr, tx: mpsc::Sender<String>) {
 fn lock_builder() -> Value {
     json!({
         "schemaVersion": 1,
-        "version": "0.1.2-alpha.5",
-        "tag": "dsh-v0.1.2-alpha.5",
-        "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
-        "publishedAt": "2026-09-02T07:48:33Z",
+        "version": "9.8.7-rc.6",
+        "tag": "dsh-v9.8.7-rc.6",
+        "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+        "publishedAt": "2026-09-04T03:14:50.092519Z",
         "source": {
-            "kind": "project-built-from-official-source",
-            "tag": "dsh-v0.1.2-alpha.5",
-            "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
+            "kind": "official-wheel",
+            "url": "https://files.pythonhosted.org/packages/fixed/runtime.whl",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         },
-        "officialWheel": { "status": "unavailable" },
+        "officialWheel": { "status": "available" },
         "license": "MIT",
         "licenseResult": { "spdx": "MIT" },
         "cyclonedxPath": "sbom/runtime.cdx.json",
         "profileVersion": "dsh-runtime-profile-v1",
         "contractHash": CONTRACT_HASH,
         "aioSemverRange": ">=0.7.0-alpha.4",
-        "toolchain": { "node": "24", "pnpm": "11.7.0", "python": "3.10", "rust": "1.89.0" },
+        "toolchain": { "node": "not-applicable", "pnpm": "not-applicable", "python": "3.10", "rust": "not-applicable" },
         "platforms": {
             "win32-x64": { "platform": "win32-x64", "arch": "x64" }
         }

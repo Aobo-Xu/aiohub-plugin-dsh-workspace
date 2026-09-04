@@ -42,6 +42,37 @@ async function readLock(path: string): Promise<{
   };
 }
 
+export async function generateSbom(lockPath: string, out: string): Promise<void> {
+  const lock = await readLock(lockPath);
+  const sbom = {
+    bomFormat: "CycloneDX",
+    specVersion: "1.6",
+    metadata: {
+      component: {
+        type: "application",
+        name: "deepseek-harness-runtime",
+        version: lock.version,
+        licenses: [{ license: { id: lock.license } }],
+        properties: [
+          { name: "aio:runtime-source", value: lock.sourceKind },
+          { name: "aio:contract-hash", value: lock.contractHash },
+        ],
+      },
+    },
+    components: [
+      {
+        type: "framework",
+        name: "deepseek-harness",
+        version: lock.version,
+        licenses: [{ license: { id: lock.license } }],
+      },
+    ],
+  };
+  const outputPath = resolve(out);
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, `${JSON.stringify(sbom, null, 2)}\n`);
+}
+
 function usage(): string {
   return [
     "Usage: node --experimental-strip-types scripts/runtime/generate-sbom.ts --lock <path> --out <path>",
@@ -68,34 +99,7 @@ if (import.meta.main) {
     console.error(usage());
     process.exitCode = 1;
   } else {
-    const lock = await readLock(values.lock);
-    const sbom = {
-      bomFormat: "CycloneDX",
-      specVersion: "1.6",
-      metadata: {
-        component: {
-          type: "application",
-          name: "deepseek-harness-runtime",
-          version: lock.version,
-          licenses: [{ license: { id: lock.license } }],
-          properties: [
-            { name: "aio:runtime-source", value: lock.sourceKind },
-            { name: "aio:contract-hash", value: lock.contractHash },
-          ],
-        },
-      },
-      components: [
-        {
-          type: "framework",
-          name: "deepseek-harness",
-          version: lock.version,
-          licenses: [{ license: { id: lock.license } }],
-        },
-      ],
-    };
-    const outputPath = resolve(values.out);
-    await mkdir(dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(sbom, null, 2)}\n`);
-    console.log(outputPath);
+    await generateSbom(values.lock, values.out);
+    console.log(resolve(values.out));
   }
 }

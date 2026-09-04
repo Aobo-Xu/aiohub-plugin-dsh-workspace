@@ -35,29 +35,6 @@ export type PackagePlatformResult = {
 
 const SUPPORT_LEVELS = new Set<SupportLevel>(["supported", "preview"]);
 const RELEASE_PLATFORM: PlatformKey = "win32-x64";
-const MIT_LICENSE = `MIT License
-
-Copyright (c) 2026 AIO Hub contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-`;
-
 export async function packagePlatform(
   options: PackagePlatformOptions,
 ): Promise<PackagePlatformResult> {
@@ -136,7 +113,6 @@ export async function packagePlatform(
   );
 
   await mkdir(join(staging, "licenses"), { recursive: true });
-  await writeFile(join(staging, "licenses", "runtime-MIT.txt"), MIT_LICENSE);
   await copyFile(
     join(options.root, "LICENSE"),
     join(staging, "licenses", "aio-dsh-supervisor-Apache-2.0.txt"),
@@ -149,6 +125,7 @@ export async function packagePlatform(
     "runtime-lock.json",
     "support-results.json",
     "licenses/runtime-MIT.txt",
+    "licenses/runtime-THIRD_PARTY_NOTICES.md",
     "licenses/aio-dsh-supervisor-Apache-2.0.txt",
     manifest.sidecar.executable[runtime.platform],
     ...runtime.files.map((file) => file.path),
@@ -243,7 +220,7 @@ async function findLockFile(root: string): Promise<string> {
     const repositoryLock = join(
       root,
       "runtime-lock",
-      "dsh-v0.1.2-alpha.5.json",
+      "dsh-runtime.json",
     );
     await readFile(repositoryLock);
     return repositoryLock;
@@ -263,6 +240,7 @@ async function runtimeFromRepository(
   }
 
   return {
+    version: lock.version,
     platform,
     root: runtimeRoot,
     source: lock.source,

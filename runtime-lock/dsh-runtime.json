@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.2-rc.1",
+  "tag": "dsh-v0.1.2-rc.1",
+  "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+  "publishedAt": "2026-09-04T03:14:50.092519Z",
+  "source": {
+    "kind": "official-wheel",
+    "url": "https://files.pythonhosted.org/packages/e7/63/16b5733796e85f5df2d5985f0c78fdf582cd002f687d7e985f16d19d9cb3/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-win_amd64.whl",
+    "sha256": "390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f"
+  },
+  "officialWheel": {
+    "status": "available",
+    "distribution": "deepseek-harness-runtime-bin",
+    "filename": "deepseek_harness_runtime_bin-0.1.2rc1-py3-none-win_amd64.whl",
+    "platform": "win32-x64",
+    "url": "https://files.pythonhosted.org/packages/e7/63/16b5733796e85f5df2d5985f0c78fdf582cd002f687d7e985f16d19d9cb3/deepseek_harness_runtime_bin-0.1.2rc1-py3-none-win_amd64.whl",
+    "sha256": "390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f"
+  },
+  "license": "MIT",
+  "licenseResult": {
+    "spdx": "MIT",
+    "source": "official-wheel-metadata"
+  },
+  "cyclonedxPath": "sbom/runtime.cdx.json",
+  "profileVersion": "dsh-runtime-profile-v1",
+  "contractHash": "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
+  "aioSemverRange": ">=0.7.0-alpha.4",
+  "toolchain": {
+    "node": "not-applicable",
+    "pnpm": "not-applicable",
+    "python": "3.10",
+    "rust": "not-applicable"
+  },
+  "platforms": {
+    "win32-x64": {
+      "platform": "win32-x64",
+      "arch": "x64",
+      "artifactState": { "status": "built" },
+      "nodePkgTarget": "node24-win-x64",
+      "pythonTarget": "win_amd64",
+      "osFloor": { "kind": "windows", "version": "10" },
+      "runtimeClosure": [
+        "bin/deepseek-harness-sdk-runtime-win-x64.exe",
+        "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe"
+      ],
+      "files": [
+        { "path": "bin/deepseek-harness-sdk-runtime-win-x64.exe", "sha256": "63066db12457ddf898afb44db6314713e18130f7fdb36030a9d98c23bc0b3162", "executable": true },
+        { "path": "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe", "sha256": "f9dde63498b3193f098355dbec97af99dc4f6b8fa0df5ed04114a03012c042cb", "executable": true },
+        { "path": "licenses/runtime-MIT.txt", "sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be", "executable": false },
+        { "path": "licenses/runtime-THIRD_PARTY_NOTICES.md", "sha256": "45c3d5ad23ea58fe6aaa2703488f74f03ea53cc0fa80c1024c24d63670570779", "executable": false },
+        { "path": "sbom/runtime.cdx.json", "sha256": "a6a714f790d9953705384b944f00d8f598bf7595aa4c576fbf1a21f75aa07078", "executable": false }
+      ]
+    },
+    "linux-x64": {
+      "platform": "linux-x64", "arch": "x64", "artifactState": { "status": "not-built", "reason": "native-runner-required" },
+      "nodePkgTarget": "node24-linux-x64", "pythonTarget": "manylinux_2_28_x86_64", "osFloor": { "kind": "glibc", "version": "2.28" },
+      "runtimeClosure": ["bin/deepseek-harness-sdk-runtime-linux-x64", "bin/deepseek-harness-sdk-runtime-linux-x64-rg"], "files": []
+    },
+    "linux-arm64": {
+      "platform": "linux-arm64", "arch": "arm64", "artifactState": { "status": "not-built", "reason": "native-runner-required" },
+      "nodePkgTarget": "node24-linux-arm64", "pythonTarget": "manylinux_2_28_aarch64", "osFloor": { "kind": "glibc", "version": "2.28" },
+      "runtimeClosure": ["bin/deepseek-harness-sdk-runtime-linux-arm64", "bin/deepseek-harness-sdk-runtime-linux-arm64-rg"], "files": []
+    },
+    "darwin-arm64": {
+      "platform": "darwin-arm64", "arch": "arm64", "artifactState": { "status": "not-built", "reason": "native-runner-required" },
+      "nodePkgTarget": "node24-macos-arm64", "pythonTarget": "macosx_14_0_arm64", "osFloor": { "kind": "macos", "version": "14.0" },
+      "runtimeClosure": ["bin/deepseek-harness-sdk-runtime-macos-arm64", "bin/deepseek-harness-sdk-runtime-macos-arm64-rg", "bin/deepseek-harness-sdk-runtime-macos-arm64-spawn-helper"], "files": []
+    }
+  }
+}

@@ -137,9 +137,9 @@ fn host_initialize_request(
         contract_hash: DSH_CONTRACT_HASH.to_owned(),
         runtime: RuntimeProvenance {
             component: "aio-dsh-supervisor".to_owned(),
-            version: "0.1.2-alpha.5".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             build_id: "resident-sidecar".to_owned(),
-            source_revision: Some(aio_dsh_supervisor::runtime::DSH_COMMIT.to_owned()),
+            source_revision: None,
         },
         platform: PlatformFacts {
             platform: PlatformKey::Win32X64,

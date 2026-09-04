@@ -6,17 +6,11 @@ import { parseArgs } from "node:util";
 export type PlatformKey =
   "win32-x64" | "linux-x64" | "linux-arm64" | "darwin-arm64";
 
-export type RuntimeSource =
-  | {
-      kind: "official-wheel";
-      url: string;
-      sha256: string;
-    }
-  | {
-      kind: "project-built-from-official-source";
-      tag: "dsh-v0.1.2-alpha.5";
-      commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
-    };
+export type RuntimeSource = {
+  kind: "official-wheel";
+  url: string;
+  sha256: string;
+};
 
 export type RuntimeFile = {
   path: string;
@@ -25,10 +19,10 @@ export type RuntimeFile = {
 };
 
 export type RuntimeToolchain = {
-  node: "24";
-  pnpm: "11.7.0";
+  node: "not-applicable";
+  pnpm: "not-applicable";
   python: "3.10";
-  rust: "1.89.0";
+  rust: "not-applicable";
 };
 
 export type RuntimeArtifactState =
@@ -54,28 +48,27 @@ export type RuntimePlatformSpec = {
   files: readonly RuntimeFile[];
 };
 
-export type OfficialWheelStatus =
-  | {
-      status: "unavailable";
-      reason: "not-published-for-0.1.2a5";
-    }
-  | {
-      status: "available";
-      platform: PlatformKey;
-      url: string;
-      sha256: string;
-    };
+export type OfficialWheelStatus = {
+  status: "available";
+  platform: "win32-x64";
+  url: string;
+  sha256: string;
+};
 
 export type RuntimeLockV1 = {
   schemaVersion: 1;
-  version: "0.1.2-alpha.5";
-  tag: "dsh-v0.1.2-alpha.5";
-  commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5";
-  publishedAt: "2026-09-02T07:48:33Z";
+  version: string;
+  tag: string;
+  commit: string;
+  publishedAt: string;
   source: RuntimeSource;
   officialWheel: {
-    status: "unavailable";
-    distributions: readonly string[];
+    status: "available";
+    distribution: "deepseek-harness-runtime-bin";
+    filename: string;
+    platform: "win32-x64";
+    url: string;
+    sha256: string;
   };
   license: "MIT";
   licenseResult: {
@@ -91,6 +84,7 @@ export type RuntimeLockV1 = {
 };
 
 export type VerifiedRuntime = {
+  version: string;
   platform: PlatformKey;
   root: string;
   source: RuntimeSource;
@@ -109,9 +103,6 @@ export type VerifiedRuntime = {
   toolchain: RuntimeToolchain;
 };
 
-export const DSH_TAG = "dsh-v0.1.2-alpha.5" as const;
-export const DSH_COMMIT = "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5" as const;
-export const DSH_VERSION = "0.1.2-alpha.5" as const;
 export const DSH_CONTRACT_HASH =
   "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519" as const;
 
@@ -121,7 +112,7 @@ const repositoryRoot = dirname(
 const lockPath = join(
   repositoryRoot,
   "runtime-lock",
-  "dsh-v0.1.2-alpha.5.json",
+  "dsh-runtime.json",
 );
 
 const platformKeys = [
@@ -152,24 +143,19 @@ function assertRuntimeLock(payload: unknown, path: string): RuntimeLockV1 {
   const lock = payload as RuntimeLockV1;
   if (
     lock.schemaVersion !== 1 ||
-    lock.tag !== DSH_TAG ||
-    lock.commit !== DSH_COMMIT ||
-    lock.version !== DSH_VERSION ||
+    typeof lock.version !== "string" ||
+    lock.version.length === 0 ||
+    lock.tag !== `dsh-v${lock.version}` ||
+    !/^[0-9a-f]{40}$/.test(lock.commit) ||
     lock.contractHash !== DSH_CONTRACT_HASH ||
-    lock.source?.kind !== "project-built-from-official-source" ||
-    lock.source.tag !== DSH_TAG ||
-    lock.source.commit !== DSH_COMMIT
+    lock.source?.kind !== "official-wheel" ||
+    lock.source.url !== lock.officialWheel?.url ||
+    lock.source.sha256 !== lock.officialWheel?.sha256 ||
+    lock.officialWheel?.status !== "available" ||
+    lock.officialWheel.platform !== "win32-x64" ||
+    lock.officialWheel.filename.length === 0
   ) {
     throw new Error(`RUNTIME_LOCK_INVALID: ${path}`);
-  }
-  if (
-    lock.sourcePatches?.length !== 1 ||
-    lock.sourcePatches[0]?.path !==
-      "patches/dsh-alpha5-runtime-closure.patch" ||
-    lock.sourcePatches[0]?.sha256 !==
-      "66435c27835a9117bda23e51fc27f593fb0b7f854148e9b0d7161ed56689d549"
-  ) {
-    throw new Error(`RUNTIME_LOCK_INVALID: unpinned source patch in ${path}`);
   }
   for (const key of platformKeys) {
     const platform = lock.platforms?.[key];
@@ -197,17 +183,14 @@ export function officialWheelStatus(
   lock: RuntimeLockV1,
   platform: PlatformKey,
 ): OfficialWheelStatus {
-  if (lock.source.kind === "official-wheel") {
-    return {
-      status: "available",
-      platform,
-      url: lock.source.url,
-      sha256: lock.source.sha256,
-    };
+  if (platform !== "win32-x64") {
+    throw new Error(`RUNTIME_OFFICIAL_WHEEL_UNAVAILABLE: ${platform}`);
   }
   return {
-    status: "unavailable",
-    reason: "not-published-for-0.1.2a5",
+    status: "available",
+    platform,
+    url: lock.source.url,
+    sha256: lock.source.sha256,
   };
 }
 
@@ -221,6 +204,7 @@ export async function resolveRuntime(
     throw new Error(`RUNTIME_PLATFORM_UNSUPPORTED: ${platform}`);
   }
   return {
+    version: lock.version,
     platform,
     root: resolve(
       options.root ?? join(repositoryRoot, ".artifacts", "runtime"),
@@ -247,8 +231,8 @@ function usage(): string {
     "  --offline        Do not probe PyPI for an official wheel.",
     "  --help           Show this help.",
     "",
-    "The alpha.5 official wheel is unavailable for all platforms.",
-    "Resolution therefore selects project-built-from-official-source.",
+    "Windows x64 resolves to the official PyPI wheel pinned by runtime-lock/dsh-runtime.json.",
+    "Acquisition verifies the wheel SHA-256 before extracting the audited closure.",
   ].join("\n");
 }
 

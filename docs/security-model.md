@@ -7,7 +7,7 @@ session, credential, runtime, log, and temporary locations below it.
 
 The default policy is `workspace-write + ask`. Full access is an explicit,
 non-persistent user choice. A missing required sandbox capability fails closed;
-the process-tree manager is not described as a sandbox. DSH alpha.5 and its
+the process-tree manager is not described as a sandbox. The locked DSH runtime and its
 sandbox boundaries remain unaudited, so credential and workspace access should
 be treated accordingly.
 

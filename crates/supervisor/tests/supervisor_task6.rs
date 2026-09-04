@@ -19,9 +19,9 @@ fn initialize_request(contract_hash: &str) -> InitializeRequest {
         contract_hash: contract_hash.to_owned(),
         runtime: RuntimeProvenance {
             component: "dsh-runtime".to_owned(),
-            version: "0.1.2-alpha.5".to_owned(),
+            version: "9.8.7-rc.6".to_owned(),
             build_id: "task-6-test".to_owned(),
-            source_revision: Some("db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5".to_owned()),
+            source_revision: Some("a66e4702047846cdaa10c66c9d3df3951f5ea70d".to_owned()),
         },
         platform: PlatformFacts {
             platform: PlatformKey::Win32X64,
@@ -74,19 +74,17 @@ impl Drop for TempRoot {
 fn lock_builder() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
-        "version": "0.1.2-alpha.5",
-        "tag": "dsh-v0.1.2-alpha.5",
-        "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
-        "publishedAt": "2026-09-02T07:48:33Z",
+        "version": "9.8.7-rc.6",
+        "tag": "dsh-v9.8.7-rc.6",
+        "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+        "publishedAt": "2026-09-04T03:14:50.092519Z",
         "source": {
-            "kind": "project-built-from-official-source",
-            "tag": "dsh-v0.1.2-alpha.5",
-            "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
+            "kind": "official-wheel",
+            "url": "https://files.pythonhosted.org/packages/fixed/runtime.whl",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         },
         "officialWheel": {
-            "status": "unavailable",
-            "distributions": ["deepseek-harness-sdk", "deepseek-harness-runtime-bin"],
-            "reason": "not-published-for-0.1.2a5"
+            "status": "available"
         },
         "license": "MIT",
         "licenseResult": { "spdx": "MIT", "source": "upstream-package" },
@@ -94,7 +92,7 @@ fn lock_builder() -> serde_json::Value {
         "profileVersion": "dsh-runtime-profile-v1",
         "contractHash": "96af8af6cdb538da2cd13c53eb4dd640f0ca233aab68b209d82fc744e01da519",
         "aioSemverRange": ">=0.7.0-alpha.4",
-        "toolchain": { "node": "24", "pnpm": "11.7.0", "python": "3.10", "rust": "1.89.0" },
+        "toolchain": { "node": "not-applicable", "pnpm": "not-applicable", "python": "3.10", "rust": "not-applicable" },
         "platforms": {
             "win32-x64": {
                 "platform": "win32-x64",
@@ -153,7 +151,7 @@ fn lock_builder() -> serde_json::Value {
 }
 
 fn write_lock(root: &Path, value: &serde_json::Value) -> PathBuf {
-    let path = root.join("dsh-v0.1.2-alpha.5.json");
+    let path = root.join("dsh-runtime.json");
     fs::write(&path, serde_json::to_vec(value).expect("serialize lock")).expect("write lock");
     path
 }
@@ -187,6 +185,19 @@ fn runtime_validator_accepts_frozen_lock_for_known_platforms() {
         let validated = RuntimeValidator::validate(&lock, platform).expect("validate lock");
         assert_eq!(validated.architecture(), expected);
     }
+}
+
+#[test]
+fn runtime_validator_accepts_a_future_lock_without_recompilation() {
+    let root = TempRoot::new("validator-future-version");
+    let mut lock = lock_builder();
+    lock["version"] = serde_json::json!("9.8.7-rc.6");
+    lock["tag"] = serde_json::json!("dsh-v9.8.7-rc.6");
+    lock["commit"] = serde_json::json!("2222222222222222222222222222222222222222");
+    assert!(
+        RuntimeValidator::validate(&write_lock(root.path(), &lock), PlatformTarget::Win32X64,)
+            .is_ok()
+    );
 }
 
 #[test]

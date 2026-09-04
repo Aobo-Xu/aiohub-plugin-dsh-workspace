@@ -34,12 +34,12 @@ describe("runtime artifact CLI", () => {
         component: {
           type: "application",
           name: "deepseek-harness-runtime",
-          version: "0.1.2-alpha.5",
+          version: "9.8.7-rc.6",
           licenses: [{ license: { id: "MIT" } }],
           properties: [
             {
               name: "aio:runtime-source",
-              value: "project-built-from-official-source",
+              value: "official-wheel",
             },
             {
               name: "aio:contract-hash",
@@ -85,22 +85,23 @@ describe("runtime artifact CLI", () => {
 
     await writeFile(lockPath, JSON.stringify({
       schemaVersion: 1,
-      tag: "dsh-v0.1.2-alpha.5",
-      commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
+      version: "9.8.7-rc.6",
+      tag: "dsh-v9.8.7-rc.6",
+      commit: "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
       platform: "win32-x64",
       arch: "x64",
       artifactState: { status: "built" },
       source: {
-        kind: "project-built-from-official-source",
-        tag: "dsh-v0.1.2-alpha.5",
-        commit: "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
+        kind: "official-wheel",
+        url: "https://files.pythonhosted.org/packages/fixed/runtime.whl",
+        sha256: "1".repeat(64),
       },
       nodePkgTarget: "node24-win-x64",
       toolchain: {
-        node: "24",
-        pnpm: "11.7.0",
+        node: "not-applicable",
+        pnpm: "not-applicable",
         python: "3.10",
-        rust: "1.89.0",
+        rust: "not-applicable",
       },
       files,
       runtimeClosure,

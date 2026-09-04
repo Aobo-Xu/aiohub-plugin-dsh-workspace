@@ -4,10 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import {
-  DSH_VERSION,
-  DSH_COMMIT,
   DSH_CONTRACT_HASH,
-  DSH_TAG,
   type RuntimeArtifactState,
   type PlatformKey,
   type RuntimeFile,
@@ -70,20 +67,10 @@ export async function verifyRuntime(
 }
 
 function verifySource(source: RuntimeSource): void {
-  if (source.kind === "project-built-from-official-source") {
-    if (source.tag !== DSH_TAG || source.commit !== DSH_COMMIT) {
-      fail(
-        "RUNTIME_MOVING_REF",
-        `DSH source must be pinned to ${DSH_TAG} at ${DSH_COMMIT}`
-      );
-    }
-    return;
-  }
-
   const url = new URL(source.url);
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "pypi.org" ||
+    url.hostname !== "files.pythonhosted.org" ||
     url.pathname.includes("/actions/runs/")
   ) {
     fail(
@@ -134,10 +121,10 @@ function verifyContract(contractHash: string): void {
 
 function verifyToolchain(toolchain: RuntimeToolchain): void {
   if (
-    toolchain.node !== "24" ||
-    toolchain.pnpm !== "11.7.0" ||
+    toolchain.node !== "not-applicable" ||
+    toolchain.pnpm !== "not-applicable" ||
     toolchain.python !== "3.10" ||
-    toolchain.rust !== "1.89.0"
+    toolchain.rust !== "not-applicable"
   ) {
     fail("RUNTIME_TOOLCHAIN_MISMATCH", "runtime toolchain is not pinned");
   }
@@ -259,7 +246,7 @@ async function verifySbom(runtime: VerifiedRuntime): Promise<void> {
     sbom.bomFormat !== "CycloneDX" ||
     sbom.specVersion !== "1.6" ||
     sbom.metadata?.component?.name !== "deepseek-harness-runtime" ||
-    sbom.metadata?.component?.version !== DSH_VERSION
+    sbom.metadata?.component?.version !== runtime.version
   ) {
     fail(
       "RUNTIME_SBOM_INVALID",
@@ -284,6 +271,7 @@ async function verifySbom(runtime: VerifiedRuntime): Promise<void> {
 
 type SinglePlatformLock = {
   schemaVersion: number;
+  version: string;
   platform: PlatformKey;
   source: RuntimeSource;
   artifactState: RuntimeArtifactState;
@@ -314,6 +302,7 @@ async function runtimeFromLock(
       throw new Error(`RUNTIME_PLATFORM_UNSUPPORTED: ${platform}`);
     }
     return {
+      version: lock.version,
       platform,
       root,
       source: lock.source,
@@ -328,6 +317,7 @@ async function runtimeFromLock(
     };
   }
   return {
+    version: payload.version,
     platform: payload.platform,
     root,
     source: payload.source,

@@ -28,7 +28,7 @@ const REQUIRED_DOCS = [
 export async function verifyRelease(root: string): Promise<ReleaseReport> {
   const failures: ReleaseFailure[] = [];
   const lock = await readJson(
-    join(root, "runtime-lock", "dsh-v0.1.2-alpha.5.json"),
+    join(root, "runtime-lock", "dsh-runtime.json"),
     failures,
   );
   const manifest = await readJson(join(root, "manifest.json"), failures);
@@ -65,7 +65,7 @@ function supportedPlatforms(
   if (!asRecord(platforms)) {
     failures.push({
       code: "RUNTIME_LOCK_INVALID",
-      artifact: "runtime-lock/dsh-v0.1.2-alpha.5.json",
+      artifact: "runtime-lock/dsh-runtime.json",
     });
     return [];
   }
@@ -132,6 +132,7 @@ async function verifyZip(
     "runtime-lock.json",
     "support-results.json",
     "licenses/runtime-MIT.txt",
+    "licenses/runtime-THIRD_PARTY_NOTICES.md",
     "licenses/aio-dsh-supervisor-Apache-2.0.txt",
     "bin/win32-x64/aio-dsh-supervisor.exe",
     "bin/deepseek-harness-sdk-runtime-win-x64.exe",
