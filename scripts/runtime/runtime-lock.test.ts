@@ -478,6 +478,24 @@ describe("runtime lock verification", () => {
 });
 
 describe("runtime supply-chain CLI", () => {
+  it("forces pinned source patches to LF bytes in every Git checkout", () => {
+    const result = spawnSync(
+      "git",
+      [
+        "check-attr",
+        "eol",
+        "--",
+        "patches/dsh-alpha5-runtime-closure.patch",
+      ],
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 30_000 },
+    );
+
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      "patches/dsh-alpha5-runtime-closure.patch: eol: lf",
+    );
+  });
+
   it("rejects a source checkout when the pinned lock digest drifts", async () => {
     const { sourceRoot, pin } = await createSourceFixture();
     try {

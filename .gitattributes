@@ -1,3 +1,4 @@
 generated/protocol.schema.json text eol=lf
 generated/protocol.d.ts text eol=lf
 generated/protocol.sha256 binary
+patches/*.patch text eol=lf
