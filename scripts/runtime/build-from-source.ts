@@ -58,6 +58,7 @@ type CommandRunner = (
   args: readonly string[],
   cwd: string,
   code?: string,
+  environment?: NodeJS.ProcessEnv,
 ) => Promise<string>;
 
 type PnpmCommand = {
@@ -135,13 +136,14 @@ async function run(
   args: readonly string[],
   cwd: string,
   code = "RUNTIME_BUILD_UPSTREAM_FAILED",
+  environment: NodeJS.ProcessEnv = {},
 ): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, CI: "true" },
+      env: { ...process.env, ...environment, CI: "true" },
     });
     let stdout = "";
     let stderr = "";
@@ -236,6 +238,10 @@ function resolvePnpmCommandForEnvironment(
 
 function resolvePnpmCommand(): PnpmCommand {
   return resolvePnpmCommandForEnvironment(process.env, process.platform);
+}
+
+function pnpmEnvironment(pnpm: PnpmCommand): NodeJS.ProcessEnv {
+  return { npm_execpath: pnpm.args[0] ?? pnpm.command };
 }
 
 async function readPinnedPackage(sourceRoot: string): Promise<{
@@ -382,6 +388,7 @@ async function verifyToolchain(
     [...pnpm.args, "--version"],
     sourceRoot,
     "RUNTIME_BUILD_PREREQUISITE_MISMATCH",
+    pnpmEnvironment(pnpm),
   );
   if (pnpmVersion !== REQUIRED_PNPM) {
     fail(
@@ -447,7 +454,13 @@ async function runPnpm(
   code?: string,
 ): Promise<string> {
   const pnpm = resolvePnpm();
-  return runCommand(pnpm.command, [...pnpm.args, ...args], sourceRoot, code);
+  return runCommand(
+    pnpm.command,
+    [...pnpm.args, ...args],
+    sourceRoot,
+    code,
+    pnpmEnvironment(pnpm),
+  );
 }
 
 async function stageWindowsRuntime(

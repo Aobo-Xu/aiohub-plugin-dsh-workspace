@@ -627,7 +627,11 @@ describe("runtime supply-chain CLI", () => {
     });
     const expectedRuntime = "expected-runtime";
     const expectedRg = "expected-rg";
-    const recorded: { command: string; args: readonly string[] }[] = [];
+    const recorded: {
+      command: string;
+      args: readonly string[];
+      environment?: NodeJS.ProcessEnv;
+    }[] = [];
     const lock = {
       licenseResult: { spdx: "MIT" },
       source: {
@@ -684,8 +688,14 @@ describe("runtime supply-chain CLI", () => {
             {
               pin,
               nodeVersion: "24.1.0",
-              runCommand: async (command, args, cwd) => {
-                recorded.push({ command, args });
+                runCommand: async (
+                  command,
+                  args,
+                  cwd,
+                  _code,
+                  environment,
+                ) => {
+                  recorded.push({ command, args, environment });
                 if (command === "git") {
                   const result = spawnSync(command, [...args], {
                     cwd,
@@ -748,6 +758,12 @@ describe("runtime supply-chain CLI", () => {
         command: process.execPath,
         args: [pnpmEntrypoint, "--version"],
       });
+      expect(
+        pnpmCalls.every(
+          ({ environment }) =>
+            environment?.npm_execpath === pnpmEntrypoint,
+        ),
+      ).toBe(true);
       expect(
         pnpmCalls.every(
           ({ command, args }) =>
