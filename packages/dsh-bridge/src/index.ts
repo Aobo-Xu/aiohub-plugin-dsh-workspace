@@ -26,6 +26,7 @@ export type {
   AdapterIdentity,
   AdapterPort,
   AdapterProbe,
+  AdapterSelectionEvidence,
   ArtifactPort,
   DynamicRuntimePort,
   InteractionPort,
@@ -43,7 +44,6 @@ export { ADAPTER_INCOMPATIBLE } from "./adapters/types.js";
 
 export type {
   AdapterRegistry,
-  AdapterSelectionEvidence,
   AdapterSelectionOutcome,
   AdapterFactoryRegistration,
   SettledAdapterHost,

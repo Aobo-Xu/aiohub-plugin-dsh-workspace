@@ -98,6 +98,16 @@ export interface DshReleaseAdapter {
 }
 
 /**
+ * Public service/schema evidence presented to the registry. Mirrors the
+ * runtime-lock selector contract: capability/schema identity only — a version
+ * prefix is never a valid selection input.
+ */
+export type AdapterSelectionEvidence = {
+  schemaVersion: number;
+  services: readonly string[];
+};
+
+/**
  * Selection failure code recorded by the registry when no registered adapter
  * factory is satisfied by the presented evidence.
  */

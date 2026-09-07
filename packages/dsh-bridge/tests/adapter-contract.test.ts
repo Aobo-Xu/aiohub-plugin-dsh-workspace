@@ -137,8 +137,28 @@ describe("dsh release adapter seam", () => {
     await host.dispose();
   });
 
-  it("exposes every host port through the seam without consulting provenance", async () => {
-    const adapter = createFakeAdapter();
+  it("exposes the adapter's real ports through the seam without consulting provenance", async () => {
+    // Each fake port records the operations the host asks of it, proving the
+    // host hands out the adapter's own port objects instead of synthesized
+    // wrappers.
+    const portCalls: string[] = [];
+    const createRecordingPort = (portName: string) => ({
+      operationAvailability(operationId: string): OperationAvailability {
+        portCalls.push(`${portName}:${operationId}`);
+        return { available: true };
+      },
+      [portName]: "adapter-owned-extension",
+    });
+    const adapter = createFakeAdapter({
+      workspaces: createRecordingPort("workspaces"),
+      sessions: createRecordingPort("sessions"),
+      projections: createRecordingPort("projections"),
+      interactions: createRecordingPort("interactions"),
+      artifacts: createRecordingPort("artifacts"),
+      terminals: createRecordingPort("terminals"),
+      presets: createRecordingPort("presets"),
+      dynamicRuntime: createRecordingPort("dynamicRuntime"),
+    });
     const host = createDshHost({ adapter });
     const portNames = [
       "workspaces",
@@ -153,11 +173,23 @@ describe("dsh release adapter seam", () => {
 
     for (const portName of portNames) {
       const port = host.port(portName);
+      // The port object is the adapter's own (extension fields survive), and
+      // its real methods are the ones that run.
+      expect(port[portName]).toBe("adapter-owned-extension");
       expect(port.operationAvailability("session.snapshot")).toEqual({
-        available: false,
-        reason: { code: "CAPABILITY_NOT_NEGOTIATED" },
+        available: true,
       });
     }
+    expect(portCalls).toEqual([
+      "workspaces:session.snapshot",
+      "sessions:session.snapshot",
+      "projections:session.snapshot",
+      "interactions:session.snapshot",
+      "artifacts:session.snapshot",
+      "terminals:session.snapshot",
+      "presets:session.snapshot",
+      "dynamicRuntime:session.snapshot",
+    ]);
     // Provenance is recorded, never used as a decision input.
     expect(host.adapterIdentity.adapterId).toBe("fake");
     expect(host.adapterIdentity.releaseTag).toBe("dsh-v9.9.9-fake");
@@ -206,11 +238,10 @@ describe("adapter registry selection", () => {
     expect(registry.lastSelection?.status).toBe("incompatible");
   });
 
-  it("rejects evidence that only carries a version prefix", async () => {
+  it("rejects malformed evidence without schemaVersion or services", async () => {
     const registry = createAdapterRegistry().register(() => createFakeAdapter());
 
-    // Version-flavoured evidence is never a valid selection input; a bare
-    // version prefix must not match anything.
+    // Selection evidence must be well-formed public service/schema identity.
     const host = await registry.select({
       schemaVersion: 0,
       services: [],
@@ -222,5 +253,114 @@ describe("adapter registry selection", () => {
       reason: ADAPTER_INCOMPATIBLE,
     });
     expect(registry.lastSelection?.status).toBe("incompatible");
+  });
+
+  it("rejects evidence that only carries a version prefix", async () => {
+    const registry = createAdapterRegistry().register(() => createFakeAdapter());
+
+    // A version prefix is never a valid selection input (the same rule as
+    // selectRuntimeByEvidence): it must be ignored entirely, so the selection
+    // falls back to the schema/service identity, which this evidence lacks.
+    const host = await registry.select({
+      schemaVersion: 0,
+      services: [],
+      versionPrefix: "0.1.3",
+    } as unknown as Parameters<typeof registry.select>[0]);
+
+    expect(host).toBeNull();
+    expect(registry.lastSelection).toMatchObject({
+      status: "incompatible",
+      reason: ADAPTER_INCOMPATIBLE,
+    });
+    // The prefix must not be able to satisfy selection even when the public
+    // evidence itself would be valid.
+    const prefixOnlyRegistry = createAdapterRegistry().register(
+      () => createFakeAdapter(),
+    );
+    const prefixOnlyHost = await prefixOnlyRegistry.select({
+      schemaVersion: 1,
+      services: ["gateway", "session", "workspace"],
+      versionPrefix: "0.1.3",
+    } as unknown as Parameters<typeof prefixOnlyRegistry.select>[0]);
+
+    expect(prefixOnlyHost).not.toBeNull();
+    // Selection succeeded on public evidence alone; the version prefix was
+    // not consulted (it cannot be: the adapter never sees it).
+    expect(prefixOnlyHost?.adapterIdentity.releaseTag).toBe("dsh-v9.9.9-fake");
+    expect(prefixOnlyRegistry.lastSelection).toMatchObject({
+      status: "selected",
+      adapterId: "fake",
+    });
+  });
+
+  it("disposes candidates that fail or reject during probe/settle", async () => {
+    const disposed: string[] = [];
+    const failingProbe = createFakeAdapter();
+    failingProbe.probe = async () => {
+      throw new Error("probe exploded");
+    };
+    const originalDispose = failingProbe.dispose.bind(failingProbe);
+    failingProbe.dispose = async () => {
+      disposed.push("failing-probe");
+      await originalDispose();
+    };
+
+    const failingSettle = createFakeAdapter();
+    failingSettle.settle = async () => {
+      throw new Error("settle exploded");
+    };
+    const settleDispose = failingSettle.dispose.bind(failingSettle);
+    failingSettle.dispose = async () => {
+      disposed.push("failing-settle");
+      await settleDispose();
+    };
+
+    const healthy = createFakeAdapter();
+    const healthyDispose = healthy.dispose.bind(healthy);
+    healthy.dispose = async () => {
+      disposed.push("healthy");
+      await healthyDispose();
+    };
+
+    const registry = createAdapterRegistry()
+      .register(() => failingProbe)
+      .register(() => failingSettle)
+      .register(() => healthy, {
+        requiredServices: ["gateway", "session", "workspace"],
+        schemaVersion: 1,
+      });
+
+    const host = await registry.select({
+      schemaVersion: 1,
+      services: ["gateway", "session", "workspace"],
+    });
+
+    // The healthy adapter wins; the failed candidates were disposed and the
+    // outcome is recorded instead of bubbling.
+    expect(host?.adapterIdentity.adapterId).toBe("fake");
+    expect(disposed).toEqual(["failing-probe", "failing-settle"]);
+    expect(registry.lastSelection).toMatchObject({
+      status: "selected",
+      adapterId: "fake",
+    });
+
+    // A probe failure on the only candidate records incompatible without
+    // throwing.
+    const onlyFailing = createAdapterRegistry().register(() => {
+      const adapter = createFakeAdapter();
+      adapter.probe = async () => {
+        throw new Error("probe exploded");
+      };
+      return adapter;
+    });
+    const none = await onlyFailing.select({
+      schemaVersion: 1,
+      services: ["gateway", "session", "workspace"],
+    });
+    expect(none).toBeNull();
+    expect(onlyFailing.lastSelection).toMatchObject({
+      status: "incompatible",
+      reason: ADAPTER_INCOMPATIBLE,
+    });
   });
 });

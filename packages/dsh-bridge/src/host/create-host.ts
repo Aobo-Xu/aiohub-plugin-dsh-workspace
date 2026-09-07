@@ -4,7 +4,6 @@ import type {
 } from "../../../runtime-facade/src/types.js";
 import type {
   AdapterIdentity,
-  AdapterPort,
   DshReleaseAdapter,
 } from "../adapters/types.js";
 
@@ -20,7 +19,8 @@ export interface DshHost {
   availability(operationId: string): OperationAvailability;
   /** Applies the adapter's settled capability set; fail-closed until called. */
   applyNegotiation(capabilities: readonly CapabilityDescriptor[]): void;
-  port(portName: HostPortName): AdapterPort;
+  /** Returns the adapter's own port object for the requested surface. */
+  port<K extends HostPortName>(portName: K): DshReleaseAdapter[K];
   dispose(): Promise<void>;
 }
 
@@ -66,15 +66,14 @@ export function createDshHost(options: CreateDshHostOptions): DshHost {
     applyNegotiation(capabilities: readonly CapabilityDescriptor[]): void {
       settledCapabilities = [...capabilities];
     },
-    port(portName: HostPortName): AdapterPort {
+    port<K extends HostPortName>(portName: K): DshReleaseAdapter[K] {
       if (!HOST_PORT_NAMES.includes(portName)) {
         throw new Error(`UNKNOWN_HOST_PORT: ${portName}`);
       }
-      const port = adapter[portName] as AdapterPort;
-      return {
-        operationAvailability: (operationId) =>
-          operationAvailability(operationId),
-      };
+      // Hand out the adapter's real port object: Task 5/6 extend the ports
+      // with concrete operations, so a synthesized wrapper here would
+      // silently drop everything the adapter adds.
+      return adapter[portName];
     },
     async dispose(): Promise<void> {
       settledCapabilities = [];

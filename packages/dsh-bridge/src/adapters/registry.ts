@@ -5,18 +5,13 @@ import {
   ADAPTER_INCOMPATIBLE,
   type AdapterIdentity,
   type AdapterProbe,
+  type AdapterSelectionEvidence,
   type DshReleaseAdapter,
 } from "./types.js";
 
-/**
- * Public service/schema evidence presented to the registry. Mirrors the
- * runtime-lock selector contract: capability/schema identity only — a version
- * prefix is never a valid selection input.
- */
-export type AdapterSelectionEvidence = {
-  schemaVersion: number;
-  services: readonly string[];
-};
+// The evidence type lives with the rest of the seam types in types.ts; it is
+// re-exported here so existing import sites keep working unchanged.
+export type { AdapterSelectionEvidence };
 
 /**
  * A registered adapter factory plus the public evidence it requires. The
@@ -69,6 +64,16 @@ export interface AdapterRegistry {
   readonly lastSelection: AdapterSelectionOutcome | null;
 }
 
+/** Best-effort dispose for candidates discarded mid-selection. */
+async function disposeQuietly(candidate: DshReleaseAdapter): Promise<void> {
+  try {
+    await candidate.dispose();
+  } catch {
+    // A failing dispose during selection cleanup must not mask the
+    // selection outcome.
+  }
+}
+
 export function createAdapterRegistry(): AdapterRegistry {
   const registrations: Registration[] = [];
   let lastSelection: AdapterSelectionOutcome | null = null;
@@ -107,22 +112,31 @@ export function createAdapterRegistry(): AdapterRegistry {
       let probe: AdapterProbe;
       try {
         probe = await candidate.probe();
-      } catch {
+      } catch (error) {
+        await disposeQuietly(candidate);
+        lastSelection = {
+          status: "incompatible",
+          reason: ADAPTER_INCOMPATIBLE,
+          detail: `probe failed for ${candidate.identity.adapterId}: ${String(error)}`,
+        };
         continue;
       }
       if (!probe.ok) {
+        await disposeQuietly(candidate);
         continue;
       }
       if (
         registration.schemaVersion !== undefined &&
         probe.schemaVersion !== registration.schemaVersion
       ) {
+        await disposeQuietly(candidate);
         continue;
       }
       const missingServices = (registration.requiredServices ?? []).filter(
         (service) => !probe.services.includes(service),
       );
       if (missingServices.length > 0) {
+        await disposeQuietly(candidate);
         continue;
       }
       if (
@@ -131,10 +145,22 @@ export function createAdapterRegistry(): AdapterRegistry {
           evidence.services.includes(service),
         )
       ) {
+        await disposeQuietly(candidate);
         continue;
       }
 
-      const settled = await candidate.settle();
+      let settled;
+      try {
+        settled = await candidate.settle();
+      } catch (error) {
+        await disposeQuietly(candidate);
+        lastSelection = {
+          status: "incompatible",
+          reason: ADAPTER_INCOMPATIBLE,
+          detail: `settle failed for ${candidate.identity.adapterId}: ${String(error)}`,
+        };
+        continue;
+      }
       lastSelection = { status: "selected", adapterId: candidate.identity.adapterId };
       return {
         adapterIdentity: candidate.identity,
@@ -143,11 +169,13 @@ export function createAdapterRegistry(): AdapterRegistry {
       };
     }
 
-    lastSelection = {
-      status: "incompatible",
-      reason: ADAPTER_INCOMPATIBLE,
-      detail: "no registered adapter factory satisfied the presented evidence",
-    };
+    if (lastSelection === null || lastSelection.status !== "incompatible") {
+      lastSelection = {
+        status: "incompatible",
+        reason: ADAPTER_INCOMPATIBLE,
+        detail: "no registered adapter factory satisfied the presented evidence",
+      };
+    }
     return null;
   }
 
