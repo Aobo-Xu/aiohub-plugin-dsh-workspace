@@ -42,7 +42,9 @@ const ENV_TELEMETRY: &str = "AIO_DSH_SUPERVISOR_TELEMETRY";
 const ENV_CRASH_TOKEN: &str = "AIO_DSH_E2E_CRASH_TOKEN";
 const INTERRUPTED_TURN_LEDGER_FILE: &str = "interrupted-turns.json";
 /// Bounded exactly-once window: how many recent mutation records the in-memory
-/// ledger keeps per connection. Old entries are evicted FIFO-style.
+/// ledger keeps per connection. The map evicts an arbitrary entry once the
+/// capacity is reached (see `MutationLedger::insert_and_trim`); eviction order
+/// is unspecified, only the bound is guaranteed.
 const MUTATION_LEDGER_CAPACITY: usize = 512;
 
 fn main() -> ExitCode {
@@ -234,9 +236,23 @@ struct ResidentHostCommand {
     params: serde_json::Value,
 }
 
+/// Structured ledger verdict for a mutation outcome. Carried by the outcome
+/// itself instead of being sniffed from serialized frame contents, so a
+/// successful event payload that merely mentions a rejection code can never
+/// flip the ledger into discarding an executed mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MutationDisposition {
+    /// The mutation ran downstream and its result must be recorded.
+    Executed,
+    /// The mutation was rejected before any downstream transition and its
+    /// ledger reservation must be released.
+    Rejected,
+}
+
 struct CommandOutcome {
     frames: Vec<String>,
     exit_code: Option<u8>,
+    disposition: MutationDisposition,
 }
 
 impl CommandOutcome {
@@ -244,6 +260,23 @@ impl CommandOutcome {
         Self {
             frames: vec![frame],
             exit_code: None,
+            disposition: MutationDisposition::Executed,
+        }
+    }
+
+    fn with_frames(frames: Vec<String>) -> Self {
+        Self {
+            frames,
+            exit_code: None,
+            disposition: MutationDisposition::Executed,
+        }
+    }
+
+    fn rejected(frames: Vec<String>) -> Self {
+        Self {
+            frames,
+            exit_code: None,
+            disposition: MutationDisposition::Rejected,
         }
     }
 }
@@ -480,6 +513,7 @@ impl StdioDriver {
         Ok(CommandOutcome {
             frames: vec![frame.to_string()],
             exit_code: outcome.exit_code,
+            disposition: outcome.disposition,
         })
     }
 
@@ -608,6 +642,7 @@ impl StdioDriver {
         Ok(CommandOutcome {
             frames,
             exit_code: Some(0),
+            disposition: MutationDisposition::Executed,
         })
     }
 
@@ -642,11 +677,11 @@ impl StdioDriver {
             );
         }
 
-        // Capability gate: every mutation is checked against the negotiated
-        // capability set from initialize before it can reach the Host path.
-        if let Some(capability_id) = capability_for_command(&command)
-            && !self.negotiated_capabilities.contains(capability_id)
-        {
+        // Capability gate: every session command is checked against the
+        // negotiated capability set from initialize before it can reach the
+        // Host path. The mapping mirrors the protocol capability catalog.
+        let capability_id = capability_for_command(&command);
+        if !self.negotiated_capabilities.contains(capability_id) {
             return self.reject_command(
                 &envelope,
                 session_id_for_command(&command),
@@ -665,10 +700,7 @@ impl StdioDriver {
             && let Some(record) = self.mutation_ledger.begin(&active_generation, &request_id)
         {
             return match record {
-                MutationRecord::Completed(frames) => Ok(CommandOutcome {
-                    frames,
-                    exit_code: None,
-                }),
+                MutationRecord::Completed(frames) => Ok(CommandOutcome::with_frames(frames)),
                 MutationRecord::Pending | MutationRecord::Indeterminate => self.reject_command(
                     &envelope,
                     session_id_for_command(&command),
@@ -750,7 +782,9 @@ impl StdioDriver {
     /// Records the outcome of one mutation execution in the ledger. Successful
     /// outcomes store their frames so a retransmission replays them verbatim
     /// (downstream effect count stays at one); downstream rejections free the
-    /// reservation; a crash leaves the request indeterminate.
+    /// reservation; a crash leaves the request indeterminate. The verdict is
+    /// the typed `MutationDisposition` carried by the outcome, never inferred
+    /// from serialized frame contents.
     fn settle_mutation(
         &mut self,
         generation_id: &str,
@@ -759,11 +793,7 @@ impl StdioDriver {
     ) -> Result<CommandOutcome, MainError> {
         if outcome.exit_code == Some(CRASH_EXIT_CODE) {
             self.mutation_ledger.interrupt(generation_id, request_id);
-        } else if outcome
-            .frames
-            .iter()
-            .any(|frame| frame.contains("\"accepted\":false") || frame.contains("command-rejected"))
-        {
+        } else if outcome.disposition == MutationDisposition::Rejected {
             self.mutation_ledger.discard(generation_id, request_id);
         } else {
             self.mutation_ledger
@@ -841,6 +871,7 @@ impl StdioDriver {
                 })?,
             ],
             exit_code: None,
+            disposition: MutationDisposition::Executed,
         })
     }
 
@@ -919,6 +950,7 @@ impl StdioDriver {
                 })?,
             ],
             exit_code: None,
+            disposition: MutationDisposition::Executed,
         })
     }
 
@@ -977,6 +1009,7 @@ impl StdioDriver {
                     )?,
                 ],
                 exit_code: Some(CRASH_EXIT_CODE),
+                disposition: MutationDisposition::Executed,
             });
         }
 
@@ -1077,6 +1110,7 @@ impl StdioDriver {
                 })?,
             ],
             exit_code: None,
+            disposition: MutationDisposition::Executed,
         })
     }
 
@@ -1114,6 +1148,7 @@ impl StdioDriver {
                 })?,
             ],
             exit_code: None,
+            disposition: MutationDisposition::Executed,
         })
     }
 
@@ -1158,32 +1193,29 @@ impl StdioDriver {
         code: &str,
         message: &str,
     ) -> Result<CommandOutcome, MainError> {
-        Ok(CommandOutcome {
-            frames: vec![
-                self.response_frame(
-                    envelope,
-                    ResponsePayload::Session(SessionResult::Accepted(CommandAccepted {
-                        accepted: false,
-                    })),
-                )?,
-                self.session_event_frame(SessionEventSpec {
-                    seq: envelope.seq,
-                    message_id: format!("{}:rejected", envelope.message_id),
-                    correlation_id: envelope.correlation_id.clone(),
-                    generation_id: self.current_generation().to_owned(),
-                    session_id,
-                    turn_id,
-                    kind: "command-rejected".to_owned(),
-                    data: json!({
-                        "code": code,
-                        "message": self.redaction.redact_text(message),
-                        "leaseId": lease_id,
-                        "receivedDomainGenerationId": envelope.domain_generation_id,
-                    }),
-                })?,
-            ],
-            exit_code: None,
-        })
+        Ok(CommandOutcome::rejected(vec![
+            self.response_frame(
+                envelope,
+                ResponsePayload::Session(SessionResult::Accepted(CommandAccepted {
+                    accepted: false,
+                })),
+            )?,
+            self.session_event_frame(SessionEventSpec {
+                seq: envelope.seq,
+                message_id: format!("{}:rejected", envelope.message_id),
+                correlation_id: envelope.correlation_id.clone(),
+                generation_id: self.current_generation().to_owned(),
+                session_id,
+                turn_id,
+                kind: "command-rejected".to_owned(),
+                data: json!({
+                    "code": code,
+                    "message": self.redaction.redact_text(message),
+                    "leaseId": lease_id,
+                    "receivedDomainGenerationId": envelope.domain_generation_id,
+                }),
+            })?,
+        ]))
     }
 
     fn response_frame(

@@ -44,7 +44,6 @@ const LEASE_MODES = new Set<ControllerLease["mode"]>([
 
 export class SidecarRuntimeFacade implements RuntimeFacade {
   private readonly availabilityTracker = new AvailabilityTracker();
-  private readonly sentRequestIds = new Set<string>();
 
   public constructor(private readonly transport: SidecarTransport) {}
 
@@ -91,19 +90,9 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
       }
     }
 
-    const requestId = toRequestId(command);
-    if (requestId !== undefined) {
-      if (this.sentRequestIds.has(requestId)) {
-        throw new CapabilityDeniedError({
-          code: "REQUEST_ALREADY_SENT",
-          capabilityId,
-          retryable: false,
-          indeterminate: false,
-        });
-      }
-      this.sentRequestIds.add(requestId);
-    }
-
+    // Request-identity retransmission is deliberately NOT deduplicated here:
+    // the supervisor MutationLedger owns exactly-once semantics and replays
+    // the recorded result for a repeated requestId.
     return this.transport.request("command", { lease, command });
   }
 
@@ -319,31 +308,4 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 
 function invalid(subject: string): never {
   throw new Error(`Invalid ${subject} from DSH Sidecar.`);
-}
-
-const MUTATION_COMMAND_KINDS = new Set([
-  "session.acquire",
-  "session.transfer-controller",
-  "session.submit-prompt",
-  "session.cancel",
-  "session.steer",
-]);
-
-/**
- * Derives the request identity for a mutation command. Callers that already
- * attach an explicit requestId keep it; otherwise one is synthesized from the
- * session/turn identity so retries of the same logical mutation reuse it and
- * the supervisor ledger keeps the effect at exactly once.
- */
-function toRequestId(command: RuntimeCommand): string | undefined {
-  if (command.requestId !== undefined) {
-    return command.requestId;
-  }
-  if (!MUTATION_COMMAND_KINDS.has(command.kind)) {
-    return undefined;
-  }
-  if (command.sessionId === undefined || command.turnId === undefined) {
-    return undefined;
-  }
-  return `${command.sessionId}:${command.turnId}`;
 }

@@ -188,16 +188,16 @@ pub fn request_id_of(command: &SessionCommand) -> Option<&str> {
 }
 
 /// Stable capability that must be negotiated before the command is allowed to
-/// run. Mirrors `capability_catalog()` in the protocol crate: all five
-/// mutations require `session`, snapshots only require `snapshot`.
-pub fn capability_for_command(command: &SessionCommand) -> Option<&'static str> {
+/// run. Mirrors `capability_catalog()` in the protocol crate: every session
+/// command, including snapshots, hangs off the `session` capability.
+pub fn capability_for_command(command: &SessionCommand) -> &'static str {
     match command {
         SessionCommand::Acquire(_)
         | SessionCommand::TransferController(_)
         | SessionCommand::SubmitPrompt(_)
         | SessionCommand::Cancel(_)
-        | SessionCommand::Steer(_) => Some("session"),
-        SessionCommand::Snapshot(_) => Some("snapshot"),
+        | SessionCommand::Steer(_)
+        | SessionCommand::Snapshot(_) => "session",
     }
 }
 

@@ -39,6 +39,16 @@ fn initialize_request() -> InitializeRequest {
     }
 }
 
+fn initialize_request_with_capabilities(stable_capabilities: &[&str]) -> InitializeRequest {
+    InitializeRequest {
+        stable_capabilities: stable_capabilities
+            .iter()
+            .map(|capability| capability.to_string())
+            .collect(),
+        ..initialize_request()
+    }
+}
+
 fn command(payload: CommandPayload, seq: u64, generation: &str) -> String {
     serde_json::to_string(&Envelope::new(generation, seq, payload)).expect("serialize command")
 }
@@ -1470,4 +1480,56 @@ fn mutations_from_stale_generation_or_lease_never_execute_and_stay_unrecorded() 
     let (status, stderr) = harness.finish_with_stderr();
     assert!(status.success());
     assert!(stderr.is_empty());
+}
+
+#[test]
+fn snapshot_commands_stay_available_when_only_the_session_capability_is_negotiated() {
+    let fixture = RuntimeFixture::new("snapshot-capability");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    // The protocol capability catalog attaches session.snapshot to the
+    // "session" capability, so a host that negotiated only {"session"} must
+    // still be able to snapshot; the capability gate must agree with the
+    // negotiated InitializeResult.operations.
+    harness.send(&command(
+        CommandPayload::Initialize(initialize_request_with_capabilities(&["session"])),
+        1,
+        "bootstrap",
+    ));
+    let ready = harness.recv_json();
+    assert_eq!(ready["payload"]["kind"], json!("state"));
+    assert_eq!(ready["payload"]["data"]["state"], json!("ready"));
+    let generation = ready["domainGenerationId"]
+        .as_str()
+        .expect("generation")
+        .to_owned();
+
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::Snapshot(
+            aio_dsh_protocol::SnapshotRequest {
+                session_id: "session-snapshot".to_owned(),
+                cursor: None,
+            },
+        )),
+        2,
+        &generation,
+    ));
+    let snapshot = harness.recv_json();
+    assert_eq!(snapshot["payload"]["kind"], json!("session"));
+    assert_eq!(snapshot["payload"]["data"]["kind"], json!("snapshot"));
+    assert_eq!(
+        snapshot["payload"]["data"]["data"]["sessionId"],
+        json!("session-snapshot")
+    );
+    harness.assert_no_more_stdout();
+
+    harness.send(&command(
+        CommandPayload::Shutdown(aio_dsh_protocol::ShutdownRequest {
+            reason: ShutdownReason::UserStop,
+        }),
+        3,
+        &generation,
+    ));
+    let _stopped = harness.recv_json();
+    assert!(harness.finish().success());
 }
