@@ -61,7 +61,13 @@ function supportedPlatforms(
   lock: unknown,
   failures: ReleaseFailure[],
 ): PlatformKey[] {
-  const platforms = asRecord(lock)?.platforms;
+  const record = asRecord(lock);
+  // A multi-release fixture catalog resolves the production release from
+  // the pinned first entry; remaining entries are test-only fixtures.
+  const releases = Array.isArray(record?.releases)
+    ? asRecord(record.releases[0])
+    : undefined;
+  const platforms = asRecord(releases?.platforms ?? record?.platforms);
   if (!asRecord(platforms)) {
     failures.push({
       code: "RUNTIME_LOCK_INVALID",

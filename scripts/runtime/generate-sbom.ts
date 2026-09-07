@@ -17,23 +17,27 @@ async function readLock(path: string): Promise<{
   sourceKind: string;
 }> {
   const payload = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  if (payload.platforms !== undefined) {
+  const release =
+    Array.isArray(payload.releases) && payload.releases.length > 0
+      ? (payload.releases[0] as Record<string, unknown>)
+      : payload;
+  if (release.platforms !== undefined) {
     return {
-      version: String(payload.version ?? ""),
+      version: String(release.version ?? ""),
       license: String(
-        typeof payload.license === "object" && payload.license !== null
-          ? (payload.license as { license?: { id?: string } }).license?.id
-          : payload.license ?? ""
+        typeof release.license === "object" && release.license !== null
+          ? (release.license as { license?: { id?: string } }).license?.id
+          : release.license ?? ""
       ),
-      contractHash: String(payload.contractHash ?? ""),
+      contractHash: String(release.contractHash ?? ""),
       sourceKind: String(
-        typeof payload.source === "object" && payload.source !== null
-          ? (payload.source as { kind?: string }).kind
+        typeof release.source === "object" && release.source !== null
+          ? (release.source as { kind?: string }).kind
           : ""
       ),
     };
   }
-  const single = payload as SinglePlatformLock;
+  const single = release as SinglePlatformLock;
   return {
     version: single.version,
     license: single.license,

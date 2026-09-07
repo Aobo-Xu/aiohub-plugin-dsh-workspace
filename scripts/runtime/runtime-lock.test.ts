@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
+  DSH_CONTRACT_HASH,
   loadRuntimeLock,
+  loadRuntimeLockCatalog,
+  selectRuntimeByEvidence,
   officialWheelStatus,
   resolveRuntime,
+  type RuntimeLockEntry,
   type VerifiedRuntime,
 } from "./resolve-runtime.ts";
 import { generateSbom } from "./generate-sbom.ts";
@@ -105,9 +109,10 @@ describe("version-independent official runtime lock", () => {
   it("accepts a future version lock without code changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-future-lock-"));
     roots.push(root);
-    const current = JSON.parse(
+    const catalog = JSON.parse(
       await readFile(join(repositoryRoot, "runtime-lock", "dsh-runtime.json"), "utf8"),
     );
+    const current = catalog.releases[0];
     current.version = "9.8.7-rc.6";
     current.tag = "dsh-v9.8.7-rc.6";
     current.commit = "2".repeat(40);
@@ -173,3 +178,121 @@ describe("version-independent official runtime lock", () => {
     expect(pkg.scripts["build:dsh-source"]).toBeUndefined();
   });
 });
+
+describe("dual-release runtime baseline fixtures", () => {
+  const rc1Platform = "win32-x64" as const;
+
+  it("keeps both immutable release fixture entries readable and distinct", async () => {
+    const catalog = await loadRuntimeLockCatalog();
+
+    expect(catalog.schemaVersion).toBe(1);
+    expect(catalog.releases.map((entry) => entry.version)).toEqual([
+      "0.1.2-rc.1",
+      "0.1.3-alpha.2",
+    ]);
+    expect(catalog.releases.map((entry) => entry.tag)).toEqual([
+      "dsh-v0.1.2-rc.1",
+      "dsh-v0.1.3-alpha.2",
+    ]);
+    expect(new Set(catalog.releases.map((entry) => entry.commit)).size).toBe(2);
+    expect(new Set(catalog.releases.map((entry) => entry.tag)).size).toBe(2);
+  });
+
+  it.each([
+    [
+      "0.1.2-rc.1",
+      "dsh-v0.1.2-rc.1",
+      "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+      "deepseek_harness_runtime_bin-0.1.2rc1-py3-none-win_amd64.whl",
+      "390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f",
+    ],
+    [
+      "0.1.3-alpha.2",
+      "dsh-v0.1.3-alpha.2",
+      "82a5fd61a7cf5c293cec4bdff68f455398d685e9",
+      "deepseek_harness_runtime_bin-0.1.3a2-py3-none-win_amd64.whl",
+      undefined,
+    ],
+  ] as const)(
+    "preserves immutable identity for %s",
+    async (version, tag, commit, wheelFilename, wheelSha256) => {
+      const catalog = await loadRuntimeLockCatalog();
+      const entry = catalog.releases.find(
+        (candidate) => candidate.version === version,
+      );
+      expect(entry).toBeDefined();
+
+      expect(entry!.tag).toBe(tag);
+      expect(entry!.commit).toBe(commit);
+      expect(entry!.source.kind).toBe("official-wheel");
+      expect(entry!.officialWheel.filename).toBe(wheelFilename);
+      if (wheelSha256 === undefined) {
+        expect(entry!.source.sha256).toMatch(/^[0-9a-f]{64}$/);
+      } else {
+        expect(entry!.source.sha256).toBe(wheelSha256);
+      }
+      expect(entry!.source.url).toBe(entry!.officialWheel.url);
+      expect(entry!.source.sha256).toBe(entry!.officialWheel.sha256);
+      expect(entry!.licenseResult).toMatchObject({
+        spdx: "MIT",
+        source: "official-wheel-metadata",
+      });
+      expect(entry!.cyclonedxPath).toBe("sbom/runtime.cdx.json");
+      const platform = entry!.platforms[rc1Platform];
+      expect(platform.platform).toBe(rc1Platform);
+      expect(platform.pythonTarget).toBe("win_amd64");
+      expect(platform.runtimeClosure.length).toBeGreaterThan(0);
+      if (platform.artifactState.status === "built") {
+        expect(platform.files.map((file) => file.path)).toEqual(
+          expect.arrayContaining(platform.runtimeClosure),
+        );
+      } else {
+        expect(platform.files).toEqual([]);
+      }
+    },
+  );
+
+  it("resolves only capability and schema evidence, never version guesses", async () => {
+    const catalog = await loadRuntimeLockCatalog();
+
+    const rc1 = selectRuntimeByEvidence(catalog, {
+      schemaVersion: 1,
+      capabilities: { capabilities: ["dsh"] },
+    });
+    expect(rc1).toBeDefined();
+    expect(rc1!.version).toBe("0.1.2-rc.1");
+    expect(rc1!.tag).toBe("dsh-v0.1.2-rc.1");
+    expect(rc1!.contractHash).toBe(DSH_CONTRACT_HASH);
+
+    // A startswith("0.1.3") style version guess must not select alpha.2.
+    const guessed = selectRuntimeByEvidence(catalog, {
+      schemaVersion: 1,
+      versionPrefix: "0.1.3",
+    } as unknown as RuntimeSelectionEvidence);
+    expect(guessed).toBeUndefined();
+    expect(
+      selectRuntimeByEvidence(catalog, {
+        schemaVersion: 1,
+        versionPrefix: "0.1.2",
+      } as unknown as RuntimeSelectionEvidence),
+    ).toBeUndefined();
+
+    // Missing or mismatched schema evidence selects nothing.
+    expect(
+      selectRuntimeByEvidence(catalog, {
+        schemaVersion: 2,
+        capabilities: { capabilities: ["dsh"] },
+      } as unknown as RuntimeSelectionEvidence),
+    ).toBeUndefined();
+    expect(
+      selectRuntimeByEvidence(catalog, {
+        schemaVersion: 1,
+        capabilities: { capabilities: [] },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+type RuntimeSelectionEvidence = Parameters<
+  typeof selectRuntimeByEvidence
+>[1];
