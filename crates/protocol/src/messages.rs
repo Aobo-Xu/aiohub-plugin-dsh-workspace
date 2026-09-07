@@ -179,6 +179,186 @@ pub struct InitializeResult {
     pub platform: PlatformFacts,
     pub stable_capabilities: Vec<String>,
     pub experimental_capabilities: Vec<String>,
+    pub capabilities: Vec<CapabilityDescriptor>,
+    pub operations: Vec<OperationAvailability>,
+}
+
+impl InitializeResult {
+    /// Typed availability for one capability id. Returns `None` when the
+    /// contract does not know the operation at all; known but un-negotiated
+    /// operations report `available: false` with a typed reason.
+    pub fn availability(&self, capability_id: &str) -> Option<OperationAvailability> {
+        self.operations
+            .iter()
+            .find(|operation| operation.capability_id == capability_id)
+            .cloned()
+    }
+}
+
+/// Stability class of a capability, mirroring the stable/experimental split
+/// of the negotiated capability strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityStability {
+    Stable,
+    Experimental,
+}
+
+/// Access mode an operation requires on the session state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationMode {
+    Read,
+    Mutate,
+    Observe,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityDescriptor {
+    pub capability_id: String,
+    pub schema_revision: u16,
+    pub stability: CapabilityStability,
+    pub mode: OperationMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationAvailability {
+    pub capability_id: String,
+    pub schema_revision: u16,
+    pub available: bool,
+    pub mode: OperationMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<UnavailableReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum UnavailableReason {
+    #[serde(rename_all = "camelCase")]
+    NotNegotiated { message_key: String },
+    #[serde(rename_all = "camelCase")]
+    EnvironmentUnsupported { message_key: String },
+    #[serde(rename_all = "camelCase")]
+    TemporarilyUnavailable { message_key: String },
+}
+
+const NOT_NEGOTIATED_MESSAGE_KEY: &str = "capability.not-negotiated";
+
+/// Catalog of every operation the contract knows about, paired with the
+/// stable capability that must be negotiated before the operation becomes
+/// available. Entries without a capability are part of the contract but not
+/// attached to a negotiable capability yet; they are reported as unavailable
+/// with `UnavailableReason::NotNegotiated`.
+fn capability_catalog() -> impl Iterator<Item = (Option<&'static str>, CapabilityDescriptor)> {
+    fn descriptor(
+        capability_id: &'static str,
+        stability: CapabilityStability,
+        mode: OperationMode,
+    ) -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            capability_id: capability_id.to_owned(),
+            // Every catalog operation is introduced by the current contract
+            // revision; bump the revision of one capability when its payload
+            // schema changes instead of guessing a shared version number.
+            schema_revision: 1,
+            stability,
+            mode,
+        }
+    }
+
+    [
+        (
+            Some("session"),
+            descriptor(
+                "session.acquire",
+                CapabilityStability::Stable,
+                OperationMode::Mutate,
+            ),
+        ),
+        (
+            Some("session"),
+            descriptor(
+                "session.transfer-controller",
+                CapabilityStability::Stable,
+                OperationMode::Mutate,
+            ),
+        ),
+        (
+            Some("session"),
+            descriptor(
+                "session.submit-prompt",
+                CapabilityStability::Stable,
+                OperationMode::Mutate,
+            ),
+        ),
+        (
+            Some("session"),
+            descriptor(
+                "session.cancel",
+                CapabilityStability::Stable,
+                OperationMode::Mutate,
+            ),
+        ),
+        (
+            Some("session"),
+            descriptor(
+                "session.steer",
+                CapabilityStability::Stable,
+                OperationMode::Mutate,
+            ),
+        ),
+        (
+            Some("session"),
+            descriptor(
+                "session.snapshot",
+                CapabilityStability::Stable,
+                OperationMode::Read,
+            ),
+        ),
+        (
+            None,
+            descriptor(
+                "session.archive",
+                CapabilityStability::Experimental,
+                OperationMode::Read,
+            ),
+        ),
+    ]
+    .into_iter()
+}
+
+fn negotiated_capabilities(negotiated_stable: &BTreeSet<String>) -> Vec<CapabilityDescriptor> {
+    capability_catalog()
+        .filter(|(required, _)| {
+            required.is_some_and(|capability| negotiated_stable.contains(capability))
+        })
+        .map(|(_, descriptor)| descriptor)
+        .collect()
+}
+
+fn negotiated_operations(negotiated_stable: &BTreeSet<String>) -> Vec<OperationAvailability> {
+    capability_catalog()
+        .map(|(required, descriptor)| {
+            let available =
+                required.is_some_and(|capability| negotiated_stable.contains(capability));
+            OperationAvailability {
+                capability_id: descriptor.capability_id,
+                schema_revision: descriptor.schema_revision,
+                available,
+                mode: descriptor.mode,
+                reason: (!available).then(|| UnavailableReason::NotNegotiated {
+                    message_key: NOT_NEGOTIATED_MESSAGE_KEY.to_owned(),
+                }),
+            }
+        })
+        .collect()
 }
 
 pub fn negotiate_initialize(
@@ -230,6 +410,8 @@ pub fn negotiate_initialize(
     let local_experimental: BTreeSet<_> = local.experimental_capabilities.iter().cloned().collect();
     let remote_experimental: BTreeSet<_> =
         remote.experimental_capabilities.iter().cloned().collect();
+    let negotiated_stable: BTreeSet<String> =
+        local_stable.intersection(&remote_stable).cloned().collect();
 
     Ok(InitializeResult {
         protocol_version: ProtocolVersion {
@@ -242,15 +424,17 @@ pub fn negotiate_initialize(
         contract_hash: local.contract_hash.clone(),
         runtime: local.runtime.clone(),
         platform: local.platform.clone(),
-        stable_capabilities: local_stable.intersection(&remote_stable).cloned().collect(),
+        stable_capabilities: negotiated_stable.iter().cloned().collect(),
         experimental_capabilities: local_experimental
             .intersection(&remote_experimental)
             .cloned()
             .collect(),
+        capabilities: negotiated_capabilities(&negotiated_stable),
+        operations: negotiated_operations(&negotiated_stable),
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, thiserror::Error)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -260,6 +444,34 @@ pub fn negotiate_initialize(
 pub enum ProtocolError {
     #[error("incompatible protocol contract")]
     IncompatibleContract { issues: Vec<CompatibilityIssue> },
+    #[error("host operation failed")]
+    #[schemars(schema_with = "host_error_content_schema")]
+    Host(HostError),
+}
+
+/// Content schema for `ProtocolError::Host`. Adjacent-tagged content slots
+/// carry the full closed payload schema inline so validating an error never
+/// depends on reference resolution; the named `$defs.HostError` entry is kept
+/// registered so consumers can still reference it.
+fn host_error_content_schema(generator: &mut SchemaGenerator) -> Schema {
+    let _named_definition = generator.subschema_for::<HostError>();
+    <HostError as JsonSchema>::json_schema(generator)
+}
+
+/// Typed host-side failure reported through `ProtocolError::Host`. The `code`
+/// identifies the failure class; consumers must never derive it from message
+/// text. `indeterminate` marks operations whose outcome is unknown (for
+/// example after a lost connection), independently of `retryable`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostError {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
+    pub retryable: bool,
+    pub indeterminate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -336,6 +548,9 @@ pub enum SessionCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcquireSessionRequest {
+    /// Caller-chosen identity that makes the mutation idempotent across
+    /// retries; duplicates must not repeat the lease transition.
+    pub request_id: String,
     pub session_id: String,
     pub view_id: String,
     pub requested_mode: LeaseMode,
@@ -344,6 +559,9 @@ pub struct AcquireSessionRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferControllerRequest {
+    /// Caller-chosen identity that makes the mutation idempotent across
+    /// retries; duplicates must not repeat the controller transfer.
+    pub request_id: String,
     pub session_id: String,
     pub lease_id: String,
     pub target_view_id: String,
@@ -352,6 +570,9 @@ pub struct TransferControllerRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitPromptRequest {
+    /// Caller-chosen identity that makes the mutation idempotent across
+    /// retries; duplicate request ids for the same turn must not resubmit.
+    pub request_id: String,
     pub session_id: String,
     pub lease_id: String,
     pub turn_id: String,
@@ -361,6 +582,9 @@ pub struct SubmitPromptRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelRequest {
+    /// Caller-chosen identity that makes the mutation idempotent across
+    /// retries; duplicates must not repeat the cancellation.
+    pub request_id: String,
     pub session_id: String,
     pub lease_id: String,
     pub turn_id: String,
@@ -369,6 +593,9 @@ pub struct CancelRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SteerRequest {
+    /// Caller-chosen identity that makes the mutation idempotent across
+    /// retries; duplicates must not repeat the steering update.
+    pub request_id: String,
     pub session_id: String,
     pub lease_id: String,
     pub turn_id: String,

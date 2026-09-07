@@ -127,6 +127,11 @@ describe("generated protocol contract", () => {
         "ResponsePayload",
         "NotificationPayload",
         "InteractionPayload",
+        "CapabilityDescriptor",
+        "OperationAvailability",
+        "OperationMode",
+        "UnavailableReason",
+        "HostError",
       ]),
     );
     for (const envelope of [
@@ -138,6 +143,20 @@ describe("generated protocol contract", () => {
       expect(schema.$defs?.[envelope]).toMatchObject({ type: "object" });
       expect(declarations).toContain(`export type ${envelope} = {`);
     }
+    for (const typed of [
+      "CapabilityDescriptor",
+      "OperationAvailability",
+      "HostError",
+    ]) {
+      expect(schema.$defs?.[typed]).toMatchObject({
+        additionalProperties: false,
+      });
+      expect(declarations).toContain(`export type ${typed} = {`);
+    }
+    expect(declarations).toContain("code:");
+    expect(declarations).toContain("retryable:");
+    expect(declarations).toContain("indeterminate:");
+    expect(declarations).toContain("schemaRevision:");
     expect(Object.keys(schema.$defs ?? {})).not.toEqual(
       expect.arrayContaining(["Envelope2", "Envelope3", "Envelope4"]),
     );

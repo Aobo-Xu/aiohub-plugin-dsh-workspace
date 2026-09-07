@@ -359,7 +359,7 @@ impl StdioDriver {
             | "session.steer"
             | "session.transferController"
             | "session.snapshot" => {
-                match resident_session_command(&command.method, &command.params) {
+                match resident_session_command(&command.method, &command.params, command.id) {
                     Ok(session_command) => {
                         let generation = self.current_generation().to_owned();
                         self.handle_command(Envelope::new(
@@ -1277,8 +1277,16 @@ fn interrupted_turns_path(plugin_data_dir: &std::path::Path) -> PathBuf {
 fn resident_session_command(
     method: &str,
     params: &serde_json::Value,
+    command_id: u64,
 ) -> Result<SessionCommand, String> {
     let session_id = required_host_param(params, "sessionId")?;
+    // Hosts that predate explicit request identity fall back to a stable,
+    // sequence-derived identity so retries stay idempotent.
+    let fallback_request_id = params
+        .get("requestId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("host-command-{command_id}"));
     match method {
         "session.acquire" => {
             let view_id = params
@@ -1296,30 +1304,38 @@ fn resident_session_command(
                 other => return Err(format!("unsupported lease mode {other}")),
             };
             Ok(SessionCommand::Acquire(AcquireSessionRequest {
+                request_id: fallback_request_id,
                 session_id,
                 view_id,
                 requested_mode,
             }))
         }
-        "session.submitPrompt" => Ok(SessionCommand::SubmitPrompt(SubmitPromptRequest {
-            session_id,
-            lease_id: required_host_param(params, "leaseId")?,
-            turn_id: required_host_param(params, "turnId")?,
-            input: params.get("input").cloned().unwrap_or_else(|| json!({})),
-        })),
+        "session.submitPrompt" => {
+            let turn_id = required_host_param(params, "turnId")?;
+            Ok(SessionCommand::SubmitPrompt(SubmitPromptRequest {
+                request_id: fallback_request_id,
+                session_id,
+                lease_id: required_host_param(params, "leaseId")?,
+                turn_id,
+                input: params.get("input").cloned().unwrap_or_else(|| json!({})),
+            }))
+        }
         "session.steer" => Ok(SessionCommand::Steer(SteerRequest {
+            request_id: fallback_request_id,
             session_id,
             lease_id: required_host_param(params, "leaseId")?,
             turn_id: required_host_param(params, "turnId")?,
             input: params.get("input").cloned().unwrap_or_else(|| json!({})),
         })),
         "session.cancel" => Ok(SessionCommand::Cancel(CancelRequest {
+            request_id: fallback_request_id,
             session_id,
             lease_id: required_host_param(params, "leaseId")?,
             turn_id: required_host_param(params, "turnId")?,
         })),
         "session.transferController" => Ok(SessionCommand::TransferController(
             TransferControllerRequest {
+                request_id: fallback_request_id,
                 session_id,
                 lease_id: required_host_param(params, "leaseId")?,
                 target_view_id: required_host_param(params, "targetViewId")?,

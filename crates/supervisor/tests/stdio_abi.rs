@@ -617,6 +617,7 @@ fn binary_publishes_fresh_generation_and_observable_lease_events() {
     second.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
                 session_id: "session-1".to_owned(),
                 view_id: "view-a".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -639,6 +640,7 @@ fn binary_publishes_fresh_generation_and_observable_lease_events() {
     second.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
                 session_id: "session-1".to_owned(),
                 view_id: "view-b".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -699,6 +701,7 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
     harness.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
                 session_id: "session-guarded".to_owned(),
                 view_id: "view-a".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -717,6 +720,7 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
     harness.send(&command(
         CommandPayload::Session(SessionCommand::TransferController(
             aio_dsh_protocol::TransferControllerRequest {
+                request_id: "request-transfer".to_owned(),
                 session_id: "session-guarded".to_owned(),
                 lease_id: "lease-stale".to_owned(),
                 target_view_id: "view-b".to_owned(),
@@ -741,6 +745,7 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
     harness.send(&command(
         CommandPayload::Session(SessionCommand::TransferController(
             aio_dsh_protocol::TransferControllerRequest {
+                request_id: "request-transfer".to_owned(),
                 session_id: "unknown-session".to_owned(),
                 lease_id: "lease-missing".to_owned(),
                 target_view_id: "view-c".to_owned(),
@@ -764,6 +769,7 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
 
     harness.send(&command(
         CommandPayload::Session(SessionCommand::Cancel(aio_dsh_protocol::CancelRequest {
+            request_id: "request-cancel".to_owned(),
             session_id: "session-guarded".to_owned(),
             lease_id: original_lease_id,
             turn_id: "turn-still-active".to_owned(),
@@ -809,6 +815,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
     first.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
                 session_id: "session-2".to_owned(),
                 view_id: "view-a".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -828,6 +835,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
         CommandPayload::Session(SessionCommand::SubmitPrompt(
             aio_dsh_protocol::SubmitPromptRequest {
                 session_id: "session-2".to_owned(),
+                request_id: "turn-safe".to_owned(),
                 lease_id: lease_id.clone(),
                 turn_id: "turn-safe".to_owned(),
                 input: json!({ "crashToken": "crash-token-42-extra" }),
@@ -846,6 +854,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
 
     first.send(&command(
         CommandPayload::Session(SessionCommand::Cancel(aio_dsh_protocol::CancelRequest {
+            request_id: "request-cancel".to_owned(),
             session_id: "session-2".to_owned(),
             lease_id: lease_id.clone(),
             turn_id: "turn-stale".to_owned(),
@@ -870,6 +879,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
         CommandPayload::Session(SessionCommand::SubmitPrompt(
             aio_dsh_protocol::SubmitPromptRequest {
                 session_id: "session-2".to_owned(),
+                request_id: "turn-crash".to_owned(),
                 lease_id,
                 turn_id: "turn-crash".to_owned(),
                 input: json!({ "crashToken": "crash-token-42" }),
@@ -912,6 +922,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
     second.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
                 session_id: "session-2".to_owned(),
                 view_id: "view-recovery".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -931,6 +942,8 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
         CommandPayload::Session(SessionCommand::SubmitPrompt(
             aio_dsh_protocol::SubmitPromptRequest {
                 session_id: "session-2".to_owned(),
+                // Retry of the interrupted request keeps the same identity.
+                request_id: "turn-crash".to_owned(),
                 lease_id: recovered_lease_id.clone(),
                 turn_id: "turn-crash".to_owned(),
                 input: json!({ "retry": true }),
@@ -956,6 +969,7 @@ fn crash_recovery_persists_interrupted_turn_and_retry_does_not_replay_side_effec
         CommandPayload::Session(SessionCommand::SubmitPrompt(
             aio_dsh_protocol::SubmitPromptRequest {
                 session_id: "session-2".to_owned(),
+                request_id: "turn-after-recovery".to_owned(),
                 lease_id: recovered_lease_id,
                 turn_id: "turn-after-recovery".to_owned(),
                 input: json!({ "retry": false }),

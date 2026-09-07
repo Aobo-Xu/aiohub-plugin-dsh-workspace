@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use aio_dsh_protocol::{
-    CONTRACT_HASH, CommandPayload, CompatibilityIssue, Endpoint, Envelope, InitializeRequest,
-    InteractionKind, InteractionPayload, InteractionRequest, InteractionResolutionReason,
-    InteractionResolved, NotificationPayload, OverloadNotification, PlatformFacts, PlatformKey,
+    CONTRACT_HASH, CapabilityDescriptor, CapabilityStability, CommandPayload, CompatibilityIssue,
+    Endpoint, Envelope, HostError, InitializeRequest, InteractionKind, InteractionPayload,
+    InteractionRequest, InteractionResolutionReason, InteractionResolved, NotificationPayload,
+    OperationAvailability, OperationMode, OverloadNotification, PlatformFacts, PlatformKey,
     PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, SandboxBackend,
-    SandboxLevel, SandboxStatus, negotiate_initialize,
+    SandboxLevel, SandboxStatus, SessionCommand, UnavailableReason, negotiate_initialize,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -374,7 +375,12 @@ fn negotiation_rejects_major_hash_and_required_stable_incompatibilities() {
     for case in cases {
         let error = negotiate_initialize(&case.local, &case.remote)
             .expect_err("incompatible initialization must fail closed");
-        let ProtocolError::IncompatibleContract { issues } = error;
+        let ProtocolError::IncompatibleContract { issues } = error else {
+            panic!(
+                "{} must fail with an incompatible-contract error",
+                case.name
+            );
+        };
         assert!(
             issues.contains(&case.expected_issue),
             "{} incompatibility returned {issues:?}",
@@ -434,6 +440,11 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
         "InteractionPayload",
         "InitializeRequest",
         "InitializeResult",
+        "CapabilityDescriptor",
+        "OperationAvailability",
+        "OperationMode",
+        "UnavailableReason",
+        "HostError",
     ] {
         assert!(
             names.contains(required),
@@ -479,6 +490,9 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
         "export type NotificationPayload =",
         "export type InteractionEnvelope = {",
         "export type InteractionPayload =",
+        "export type CapabilityDescriptor = {",
+        "export type OperationAvailability = {",
+        "export type HostError = {",
         "protocolVersion:",
         "domainGenerationId:",
         "correlationId?:",
@@ -509,7 +523,9 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
         ("CommandPayload", "ping"),
         ("SessionCommand", "snapshot"),
         ("ProtocolError", "incompatible-contract"),
+        ("ProtocolError", "host"),
         ("CompatibilityIssue", "major-version"),
+        ("UnavailableReason", "not-negotiated"),
     ] {
         let variant = tagged_schema(definition, kind);
         assert_eq!(
@@ -520,7 +536,9 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
     }
     for (definition, kind) in [
         ("ProtocolError", "incompatible-contract"),
+        ("ProtocolError", "host"),
         ("CompatibilityIssue", "major-version"),
+        ("UnavailableReason", "not-negotiated"),
     ] {
         let data = &tagged_schema(definition, kind)["properties"]["data"];
         assert_eq!(
@@ -529,4 +547,349 @@ fn generated_schema_and_declarations_cover_protocol_roots_and_payloads() {
             "{definition}/{kind} data object must reject unknown fields"
         );
     }
+}
+
+fn mutation_command(command: &str, request_id: &str) -> serde_json::Value {
+    let data = match command {
+        "acquire" => json!({
+            "requestId": request_id,
+            "sessionId": "session-1",
+            "viewId": "view-1",
+            "requestedMode": "controller"
+        }),
+        "transfer-controller" => json!({
+            "requestId": request_id,
+            "sessionId": "session-1",
+            "leaseId": "lease-1",
+            "targetViewId": "view-2"
+        }),
+        "submit-prompt" => json!({
+            "requestId": request_id,
+            "sessionId": "session-1",
+            "leaseId": "lease-1",
+            "turnId": "turn-1",
+            "input": {}
+        }),
+        "cancel" => json!({
+            "requestId": request_id,
+            "sessionId": "session-1",
+            "leaseId": "lease-1",
+            "turnId": "turn-1"
+        }),
+        "steer" => json!({
+            "requestId": request_id,
+            "sessionId": "session-1",
+            "leaseId": "lease-1",
+            "turnId": "turn-1",
+            "input": {}
+        }),
+        other => panic!("unknown mutation command {other}"),
+    };
+    json!({
+        "kind": "session",
+        "data": {
+            "kind": command,
+            "data": data
+        }
+    })
+}
+
+#[test]
+fn mutation_commands_require_request_identity() {
+    for command in [
+        "acquire",
+        "transfer-controller",
+        "submit-prompt",
+        "cancel",
+        "steer",
+    ] {
+        let valid =
+            serde_json::from_value::<CommandPayload>(mutation_command(command, "request-1"))
+                .unwrap_or_else(|error| panic!("{command} with requestId is accepted: {error}"));
+        let CommandPayload::Session(session_command) = valid else {
+            panic!("expected session command for {command}")
+        };
+        let request_id = match session_command {
+            SessionCommand::Acquire(request) => request.request_id,
+            SessionCommand::TransferController(request) => request.request_id,
+            SessionCommand::SubmitPrompt(request) => request.request_id,
+            SessionCommand::Cancel(request) => request.request_id,
+            SessionCommand::Steer(request) => request.request_id,
+            SessionCommand::Snapshot(_) => panic!("snapshot is not a mutation command"),
+        };
+        assert_eq!(
+            request_id, "request-1",
+            "{command} carries request identity"
+        );
+
+        let mut without_id = mutation_command(command, "request-1");
+        without_id["data"]["data"]
+            .as_object_mut()
+            .expect("mutation data object")
+            .remove("requestId");
+        let error = serde_json::from_value::<CommandPayload>(without_id)
+            .expect_err("mutation command without requestId must be rejected");
+        assert!(
+            error.to_string().contains("requestId"),
+            "{command} rejection must name the missing requestId: {error}"
+        );
+    }
+}
+
+#[test]
+fn mutation_commands_reject_unknown_and_missing_discriminator() {
+    for command in [
+        "acquire",
+        "transfer-controller",
+        "submit-prompt",
+        "cancel",
+        "steer",
+    ] {
+        let mut unknown_field = mutation_command(command, "request-1");
+        unknown_field["data"]["data"]
+            .as_object_mut()
+            .expect("mutation data object")
+            .insert("unexpected".to_owned(), json!(true));
+        assert!(
+            serde_json::from_value::<CommandPayload>(unknown_field).is_err(),
+            "mutation commands must reject unknown fields"
+        );
+
+        let mut missing_discriminator = mutation_command(command, "request-1");
+        missing_discriminator["data"]
+            .as_object_mut()
+            .expect("session command object")
+            .remove("kind");
+        assert!(
+            serde_json::from_value::<CommandPayload>(missing_discriminator).is_err(),
+            "session command without a kind discriminator must be rejected"
+        );
+    }
+
+    assert!(
+        serde_json::from_value::<CommandPayload>(json!({ "data": { "kind": "submit-prompt" } }))
+            .is_err(),
+        "payload without a kind discriminator must be rejected"
+    );
+    assert!(
+        serde_json::from_value::<CommandPayload>(json!({
+            "kind": "session",
+            "data": { "data": { "requestId": "request-1" } }
+        }))
+        .is_err(),
+        "nested session command without a kind discriminator must be rejected"
+    );
+}
+
+#[test]
+fn capability_catalog_is_advertised_with_typed_availability() {
+    let result = negotiate_initialize(
+        &initialize_request(&["session"], &["session"], &["trace"]),
+        &initialize_request(&["session"], &["session"], &["trace"]),
+    )
+    .expect("compatible initialization");
+
+    let capability = CapabilityDescriptor {
+        capability_id: "session.submit-prompt".to_owned(),
+        schema_revision: 1,
+        stability: CapabilityStability::Stable,
+        mode: OperationMode::Mutate,
+    };
+    assert_eq!(
+        serde_json::to_value(&capability).expect("serialize capability descriptor"),
+        json!({
+            "capabilityId": "session.submit-prompt",
+            "schemaRevision": 1,
+            "stability": "stable",
+            "mode": "mutate"
+        })
+    );
+
+    assert!(result.capabilities.contains(&capability));
+    let availability = result
+        .availability("session.submit-prompt")
+        .expect("negotiated capability availability");
+    assert_eq!(
+        availability,
+        OperationAvailability {
+            capability_id: "session.submit-prompt".to_owned(),
+            schema_revision: 1,
+            available: true,
+            mode: OperationMode::Mutate,
+            reason: None,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&availability).expect("serialize availability"),
+        json!({
+            "capabilityId": "session.submit-prompt",
+            "schemaRevision": 1,
+            "available": true,
+            "mode": "mutate"
+        })
+    );
+
+    let unavailable = result
+        .availability("session.archive")
+        .expect("unavailable capability still reports availability");
+    assert!(!unavailable.available);
+    assert_eq!(
+        unavailable.reason,
+        Some(UnavailableReason::NotNegotiated {
+            message_key: "capability.not-negotiated".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn capability_availability_uses_typed_unavailable_reasons() {
+    let cases = [
+        (
+            UnavailableReason::NotNegotiated {
+                message_key: "capability.not-negotiated".to_owned(),
+            },
+            json!({
+                "kind": "not-negotiated",
+                "data": { "messageKey": "capability.not-negotiated" }
+            }),
+        ),
+        (
+            UnavailableReason::EnvironmentUnsupported {
+                message_key: "capability.environment-unsupported".to_owned(),
+            },
+            json!({
+                "kind": "environment-unsupported",
+                "data": { "messageKey": "capability.environment-unsupported" }
+            }),
+        ),
+        (
+            UnavailableReason::TemporarilyUnavailable {
+                message_key: "capability.busy".to_owned(),
+            },
+            json!({
+                "kind": "temporarily-unavailable",
+                "data": { "messageKey": "capability.busy" }
+            }),
+        ),
+    ];
+    for (reason, wire) in cases {
+        assert_eq!(
+            serde_json::to_value(&reason).expect("serialize unavailable reason"),
+            wire
+        );
+        assert_eq!(
+            serde_json::from_value::<UnavailableReason>(wire).expect("parse unavailable reason"),
+            reason
+        );
+    }
+
+    let mut unknown_reason = json!({
+        "kind": "not-negotiated",
+        "data": { "messageKey": "capability.not-negotiated" }
+    });
+    unknown_reason["unexpected"] = json!(true);
+    assert!(
+        serde_json::from_value::<UnavailableReason>(unknown_reason).is_err(),
+        "unknown outer fields must be rejected"
+    );
+}
+
+#[test]
+fn host_error_is_a_typed_response_payload() {
+    let host_error = HostError {
+        code: "stale-lease".to_owned(),
+        capability_id: Some("session.submit-prompt".to_owned()),
+        retryable: false,
+        indeterminate: false,
+        detail: Some(json!({ "leaseId": "lease-1" })),
+    };
+    assert_eq!(
+        serde_json::to_value(ResponsePayload::Error(ProtocolError::Host(
+            host_error.clone()
+        )))
+        .expect("serialize host error response"),
+        json!({
+            "kind": "error",
+            "data": {
+                "kind": "host",
+                "data": {
+                    "code": "stale-lease",
+                    "capabilityId": "session.submit-prompt",
+                    "retryable": false,
+                    "indeterminate": false,
+                    "detail": { "leaseId": "lease-1" }
+                }
+            }
+        })
+    );
+
+    let mut unknown_field = serde_json::to_value(&host_error).expect("serialize host error");
+    unknown_field
+        .as_object_mut()
+        .expect("host error object")
+        .insert("unexpected".to_owned(), json!(true));
+    assert!(
+        serde_json::from_value::<HostError>(unknown_field).is_err(),
+        "host error must reject unknown fields"
+    );
+    assert!(
+        serde_json::from_value::<HostError>(json!({ "code": "stale-lease" })).is_err(),
+        "host error must reject missing typed fields"
+    );
+}
+
+#[test]
+fn operation_availability_round_trips_with_camel_case_wire_names() {
+    let availability = OperationAvailability {
+        capability_id: "session.archive".to_owned(),
+        schema_revision: 2,
+        available: false,
+        mode: OperationMode::Read,
+        reason: Some(UnavailableReason::NotNegotiated {
+            message_key: "capability.not-negotiated".to_owned(),
+        }),
+    };
+    let wire = serde_json::to_value(&availability).expect("serialize availability");
+    assert_eq!(
+        wire,
+        json!({
+            "capabilityId": "session.archive",
+            "schemaRevision": 2,
+            "available": false,
+            "mode": "read",
+            "reason": {
+                "kind": "not-negotiated",
+                "data": { "messageKey": "capability.not-negotiated" }
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<OperationAvailability>(wire).expect("parse availability"),
+        availability
+    );
+
+    let mut unknown_field = serde_json::to_value(&availability).expect("serialize availability");
+    unknown_field
+        .as_object_mut()
+        .expect("availability object")
+        .insert("unexpected".to_owned(), json!(true));
+    assert!(
+        serde_json::from_value::<OperationAvailability>(unknown_field).is_err(),
+        "operation availability must reject unknown fields"
+    );
+}
+
+#[test]
+fn operation_modes_use_kebab_case_wire_values() {
+    for (mode, expected) in [
+        (OperationMode::Read, json!("read")),
+        (OperationMode::Mutate, json!("mutate")),
+        (OperationMode::Observe, json!("observe")),
+    ] {
+        assert_eq!(serde_json::to_value(mode).unwrap(), expected);
+    }
+    assert!(
+        serde_json::from_value::<OperationMode>(json!("write")).is_err(),
+        "unknown operation mode wire value must be rejected"
+    );
 }
