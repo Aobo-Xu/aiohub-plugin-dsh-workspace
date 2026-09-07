@@ -238,3 +238,125 @@ describe("SidecarRuntimeFacade validation and lifecycle", () => {
     expect((failure as AggregateError).errors).toEqual([undefined, killError]);
   });
 });
+
+describe("capability availability and typed commands", () => {
+  const negotiatedInitializeResult: InitializeResult = {
+    ...initializeResult,
+    capabilities: ["execution-domain:dsh", "session", "snapshot"],
+  };
+
+  async function negotiate(facade: SidecarRuntimeFacade): Promise<void> {
+    await facade.initialize({
+      hostApiVersion: 3,
+      platform: "win32-x64",
+      pluginDataDir: "C:/dsh",
+      prewarm: false,
+    });
+  }
+
+  it("reports un-negotiated operations fail-closed", () => {
+    const facade = new SidecarRuntimeFacade(createTransport(initializeResult));
+
+    expect(facade.availability("session.archive")).toEqual({
+      available: false,
+      reason: { code: "CAPABILITY_NOT_NEGOTIATED" },
+    });
+  });
+
+  it("rejects mutations for un-negotiated operations before the transport", async () => {
+    const transport = createTransport({ accepted: true });
+    const facade = new SidecarRuntimeFacade(transport);
+
+    await expect(
+      facade.command(controllerLease, { kind: "session.archive", input: {} })
+    ).rejects.toMatchObject({ code: "CAPABILITY_NOT_NEGOTIATED" });
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+
+  it("negotiates operation availability from the initialize result", async () => {
+    const facade = new SidecarRuntimeFacade(
+      createTransport(negotiatedInitializeResult)
+    );
+    await negotiate(facade);
+
+    expect(facade.availability("session.snapshot")).toEqual({
+      available: true,
+    });
+    expect(facade.availability("session.archive")).toEqual({
+      available: false,
+      reason: { code: "CAPABILITY_NOT_NEGOTIATED" },
+    });
+    expect(facade.capabilities()).toEqual([
+      {
+        capabilityId: "session.acquire",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "mutate",
+      },
+      {
+        capabilityId: "session.transfer-controller",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "mutate",
+      },
+      {
+        capabilityId: "session.submit-prompt",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "mutate",
+      },
+      {
+        capabilityId: "session.cancel",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "mutate",
+      },
+      {
+        capabilityId: "session.steer",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "mutate",
+      },
+      {
+        capabilityId: "session.snapshot",
+        schemaRevision: 1,
+        stability: "stable",
+        mode: "read",
+      },
+    ]);
+  });
+
+  it("forwards commands for negotiated mutations to the transport", async () => {
+    const transport = createTransport({ accepted: true });
+    transport.request.mockResolvedValueOnce(negotiatedInitializeResult);
+    const facade = new SidecarRuntimeFacade(transport);
+    await negotiate(facade);
+
+    const command = {
+      kind: "session.submit-prompt",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      input: {},
+    };
+    await expect(facade.command(controllerLease, command)).resolves.toEqual({
+      accepted: true,
+    });
+    expect(transport.request).toHaveBeenCalledWith("command", {
+      lease: controllerLease,
+      command,
+    });
+  });
+
+  it("leaves command kinds outside the capability catalog to supervisor fencing", async () => {
+    const transport = createTransport({ accepted: true });
+    const facade = new SidecarRuntimeFacade(transport);
+
+    await expect(
+      facade.command(controllerLease, { kind: "session.custom", input: {} })
+    ).resolves.toEqual({ accepted: true });
+    expect(transport.request).toHaveBeenCalledWith("command", {
+      lease: controllerLease,
+      command: { kind: "session.custom", input: {} },
+    });
+  });
+});

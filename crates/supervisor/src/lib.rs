@@ -5,6 +5,7 @@
 
 pub mod credentials;
 pub mod home;
+pub mod idempotency;
 pub mod lease;
 pub mod lifecycle;
 pub mod process;
@@ -15,6 +16,7 @@ pub mod supervisor;
 
 pub use credentials::Credentials;
 pub use home::{DshHomeLayout, HomeMode};
+pub use idempotency::{MutationLedger, MutationRecord, MutationState};
 pub use lease::Lease;
 pub use lifecycle::Lifecycle;
 pub use process::{ManagedProcess, ProcessBackend, ProcessExit, ProcessPolicy, SpawnSpec};

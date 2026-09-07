@@ -55,6 +55,7 @@ export type TransferControllerInput = ControllerLease & {
 
 export type RuntimeCommand = {
   kind: string;
+  requestId?: string;
   sessionId?: string;
   turnId?: string;
   input?: unknown;
@@ -73,6 +74,57 @@ export type SessionSnapshot = RuntimeRef & {
   seq: number;
   durableFacts: readonly RuntimeEvent[];
 };
+
+export type OperationMode = "read" | "mutate" | "observe";
+
+export type CapabilityStability = "stable" | "experimental";
+
+export type CapabilityDescriptor = {
+  capabilityId: string;
+  schemaRevision: number;
+  stability: CapabilityStability;
+  mode: OperationMode;
+};
+
+export type UnavailableReasonCode =
+  | "CAPABILITY_NOT_NEGOTIATED"
+  | "ENVIRONMENT_UNSUPPORTED"
+  | "TEMPORARILY_UNAVAILABLE";
+
+export type UnavailableReason = {
+  code: UnavailableReasonCode;
+};
+
+export type OperationAvailability = {
+  available: boolean;
+  reason?: UnavailableReason;
+};
+
+export type CapabilityHostError = {
+  code: string;
+  capabilityId?: string;
+  retryable: boolean;
+  indeterminate: boolean;
+  detail?: unknown;
+};
+
+export class CapabilityDeniedError extends Error {
+  public readonly code: string;
+  public readonly capabilityId?: string;
+  public readonly retryable: boolean;
+  public readonly indeterminate: boolean;
+  public readonly detail?: unknown;
+
+  public constructor(error: CapabilityHostError) {
+    super(error.code);
+    this.name = "CapabilityDeniedError";
+    this.code = error.code;
+    this.capabilityId = error.capabilityId;
+    this.retryable = error.retryable;
+    this.indeterminate = error.indeterminate;
+    this.detail = error.detail;
+  }
+}
 
 export type InteractionRequest = RuntimeRef & {
   sessionId: string;
@@ -125,6 +177,8 @@ export interface RuntimeFacade {
   acquireSession(input: AcquireSessionInput): Promise<ControllerLease>;
   transferController(input: TransferControllerInput): Promise<ControllerLease>;
   command<T>(lease: ControllerLease, command: RuntimeCommand): Promise<T>;
+  capabilities(): readonly CapabilityDescriptor[];
+  availability(capabilityId: string): OperationAvailability;
   snapshot(sessionId: string, cursor?: string): Promise<SessionSnapshot>;
   subscribe(listener: (event: RuntimeEvent) => void): () => void;
   shutdown(reason: "plugin-disabled" | "aio-exit" | "user-stop"): Promise<void>;

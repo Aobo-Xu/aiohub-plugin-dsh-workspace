@@ -640,7 +640,10 @@ fn binary_publishes_fresh_generation_and_observable_lease_events() {
     second.send(&command(
         CommandPayload::Session(SessionCommand::Acquire(
             aio_dsh_protocol::AcquireSessionRequest {
-                request_id: "request-acquire".to_owned(),
+                // A genuinely new acquire attempt carries a fresh request
+                // identity; reusing request-acquire would be a retransmission
+                // of the recorded first grant under the exactly-once ledger.
+                request_id: "request-acquire-second".to_owned(),
                 session_id: "session-1".to_owned(),
                 view_id: "view-b".to_owned(),
                 requested_mode: aio_dsh_protocol::LeaseMode::Controller,
@@ -1211,4 +1214,260 @@ fn resident_session_commands_enforce_initialization_and_lease_fencing() {
     assert_eq!(stopped["data"]["state"], json!("stopped"));
     let (status, _stderr) = harness.finish_with_stderr();
     assert!(status.success());
+}
+
+#[test]
+fn resident_session_retries_with_the_same_request_id_execute_the_mutation_once() {
+    let fixture = RuntimeFixture::new("resident-exactly-once");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    harness.send(&resident_command(
+        1,
+        "initialize",
+        json!({ "hostContext": { "apiVersion": 3, "sidecarProtocolVersion": 3 } }),
+    ));
+    let init = harness.recv_json();
+    assert_eq!(init["data"]["state"], json!("ready"));
+    let generation = init["data"]["domainGenerationId"]
+        .as_str()
+        .expect("generation")
+        .to_owned();
+
+    // The typed envelope path is used so every downstream frame stays
+    // observable: counting the emitted lease-granted events is exactly how a
+    // replayed mutation is told apart from a re-executed one.
+    let acquire = |seq: u64, request_id: &str, view_id: &str| {
+        command(
+            CommandPayload::Session(SessionCommand::Acquire(
+                aio_dsh_protocol::AcquireSessionRequest {
+                    request_id: request_id.to_owned(),
+                    session_id: "s-ledger".to_owned(),
+                    view_id: view_id.to_owned(),
+                    requested_mode: aio_dsh_protocol::LeaseMode::Controller,
+                },
+            )),
+            seq,
+            &generation,
+        )
+    };
+
+    harness.send(&acquire(2, "request-dedupe", "view-a"));
+    let granted = harness.recv_json();
+    assert_eq!(granted["payload"]["kind"], json!("session"));
+    assert_eq!(granted["payload"]["data"]["kind"], json!("lease"));
+    let first_lease_id = granted["payload"]["data"]["data"]["leaseId"]
+        .as_str()
+        .expect("first lease id")
+        .to_owned();
+    let grant_event = harness.recv_json();
+    assert_eq!(
+        grant_event["payload"]["data"]["data"]["kind"],
+        json!("lease-granted")
+    );
+
+    // Same requestId retransmission of the acquire mutation: the ledger must
+    // return the recorded result instead of repeating the downstream
+    // lease-minting transition. A second grant event would mean the downstream
+    // side effect ran twice, so the replay returns the recorded lease response
+    // and grant event verbatim with no fresh downstream execution.
+    harness.send(&acquire(3, "request-dedupe", "view-a"));
+    let replay_frames = harness.recv_json_frames(2);
+    assert!(replay_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("lease")
+            && frame["payload"]["data"]["data"]["leaseId"] == json!(first_lease_id)
+    }));
+    assert!(replay_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("event")
+            && frame["payload"]["data"]["data"]["kind"] == json!("lease-granted")
+    }));
+    harness.assert_no_more_stdout();
+
+    // A different request id for the same session is a genuinely new mutation,
+    // so the downstream duplicate-controller guard rejects it.
+    harness.send(&acquire(4, "request-other", "view-b"));
+    let reject_frames = harness.recv_json_frames(3);
+    assert!(reject_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("accepted")
+            && frame["payload"]["data"]["data"]["accepted"] == json!(false)
+    }));
+    assert!(reject_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["data"]["kind"] == json!("lease-rejected")
+    }));
+    harness.assert_no_more_stdout();
+
+    harness.send(&command(
+        CommandPayload::Shutdown(aio_dsh_protocol::ShutdownRequest {
+            reason: ShutdownReason::UserStop,
+        }),
+        5,
+        &generation,
+    ));
+    let _stopped = harness.recv_json();
+    assert!(harness.finish().success());
+}
+
+#[test]
+fn mutations_from_stale_generation_or_lease_never_execute_and_stay_unrecorded() {
+    let fixture = RuntimeFixture::new("stale-fencing");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    harness.send(&command(
+        CommandPayload::Initialize(initialize_request()),
+        1,
+        "bootstrap",
+    ));
+    let ready = harness.recv_json();
+    let generation = ready["domainGenerationId"]
+        .as_str()
+        .expect("generation")
+        .to_owned();
+
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::Acquire(
+            aio_dsh_protocol::AcquireSessionRequest {
+                request_id: "request-acquire".to_owned(),
+                session_id: "session-ledger".to_owned(),
+                view_id: "view-a".to_owned(),
+                requested_mode: aio_dsh_protocol::LeaseMode::Controller,
+            },
+        )),
+        2,
+        &generation,
+    ));
+    let lease = harness.recv_json();
+    let _granted = harness.recv_json();
+    let lease_id = lease["payload"]["data"]["data"]["leaseId"]
+        .as_str()
+        .expect("lease id")
+        .to_owned();
+
+    // A stale-generation mutation must be rejected before any downstream
+    // transition and must not be recorded in the ledger: its request id must
+    // stay unusable for replay within the live generation.
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::SubmitPrompt(
+            aio_dsh_protocol::SubmitPromptRequest {
+                session_id: "session-ledger".to_owned(),
+                request_id: "request-stale-gen".to_owned(),
+                lease_id: lease_id.clone(),
+                turn_id: "turn-stale".to_owned(),
+                input: json!({ "prompt": "stale generation" }),
+            },
+        )),
+        3,
+        "stale-generation",
+    ));
+    let stale_frames = harness.recv_json_frames(2);
+    assert!(stale_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("accepted")
+            && frame["payload"]["data"]["data"]["accepted"] == json!(false)
+    }));
+    assert!(stale_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("event")
+            && frame["payload"]["data"]["data"]["kind"] == json!("command-rejected")
+            && frame["payload"]["data"]["data"]["data"]["code"] == json!("stale-generation")
+    }));
+    harness.assert_no_more_stdout();
+
+    // A stale-lease mutation is likewise rejected with a zero downstream
+    // effect: no submit-prompt event besides the rejection is emitted.
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::SubmitPrompt(
+            aio_dsh_protocol::SubmitPromptRequest {
+                session_id: "session-ledger".to_owned(),
+                request_id: "request-stale-lease".to_owned(),
+                lease_id: "lease-stale".to_owned(),
+                turn_id: "turn-stale-lease".to_owned(),
+                input: json!({ "prompt": "stale lease" }),
+            },
+        )),
+        4,
+        &generation,
+    ));
+    let stale_lease_frames = harness.recv_json_frames(2);
+    assert!(stale_lease_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("accepted")
+            && frame["payload"]["data"]["data"]["accepted"] == json!(false)
+    }));
+    assert!(stale_lease_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("event")
+            && frame["payload"]["data"]["data"]["kind"] == json!("command-rejected")
+            && frame["payload"]["data"]["data"]["data"]["code"] == json!("stale-lease")
+    }));
+    harness.assert_no_more_stdout();
+
+    // The live generation, the live lease and a fresh request id reach the
+    // downstream host path: the submit-prompt event proves the mutation ran.
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::SubmitPrompt(
+            aio_dsh_protocol::SubmitPromptRequest {
+                session_id: "session-ledger".to_owned(),
+                request_id: "request-live".to_owned(),
+                lease_id: lease_id.clone(),
+                turn_id: "turn-live".to_owned(),
+                input: json!({ "prompt": "live work" }),
+            },
+        )),
+        5,
+        &generation,
+    ));
+    let accepted = harness.recv_json();
+    assert_eq!(accepted["payload"]["data"]["data"]["accepted"], json!(true));
+    let submitted = harness.recv_json();
+    assert_eq!(
+        submitted["payload"]["data"]["data"]["kind"],
+        json!("submit-prompt")
+    );
+
+    // Retransmitting the live mutation keeps the downstream effect at one: the
+    // recorded response and submit-prompt event are replayed verbatim.
+    harness.send(&command(
+        CommandPayload::Session(SessionCommand::SubmitPrompt(
+            aio_dsh_protocol::SubmitPromptRequest {
+                session_id: "session-ledger".to_owned(),
+                request_id: "request-live".to_owned(),
+                lease_id,
+                turn_id: "turn-live".to_owned(),
+                input: json!({ "prompt": "live work" }),
+            },
+        )),
+        6,
+        &generation,
+    ));
+    let replay_frames = harness.recv_json_frames(2);
+    assert!(replay_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("accepted")
+            && frame["payload"]["data"]["data"]["accepted"] == json!(true)
+    }));
+    assert!(replay_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("event")
+            && frame["payload"]["data"]["data"]["kind"] == json!("submit-prompt")
+    }));
+    harness.assert_no_more_stdout();
+
+    harness.send(&command(
+        CommandPayload::Shutdown(aio_dsh_protocol::ShutdownRequest {
+            reason: ShutdownReason::UserStop,
+        }),
+        7,
+        &generation,
+    ));
+    let stopped = harness.recv_json_where(Duration::from_secs(3), |frame| {
+        frame["payload"]["kind"] == json!("state")
+            && frame["payload"]["data"]["state"] == json!("stopped")
+    });
+    assert_eq!(stopped["payload"]["data"]["state"], json!("stopped"));
+    let (status, stderr) = harness.finish_with_stderr();
+    assert!(status.success());
+    assert!(stderr.is_empty());
 }

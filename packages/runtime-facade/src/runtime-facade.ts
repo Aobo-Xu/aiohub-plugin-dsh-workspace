@@ -1,8 +1,10 @@
 import type {
   AcquireSessionInput,
+  CapabilityDescriptor,
   ControllerLease,
   InitializeInput,
   InitializeResult,
+  OperationAvailability,
   RuntimeCommand,
   RuntimeEvent,
   RuntimeFacade,
@@ -13,6 +15,11 @@ import type {
   SidecarTransport,
   TransferControllerInput,
 } from "./types.js";
+import {
+  AvailabilityTracker,
+  commandCapabilityId,
+} from "./availability.js";
+import { CapabilityDeniedError } from "./types.js";
 
 const RUNTIME_STATES = new Set<RuntimeState>([
   "stopped",
@@ -36,10 +43,17 @@ const LEASE_MODES = new Set<ControllerLease["mode"]>([
 ]);
 
 export class SidecarRuntimeFacade implements RuntimeFacade {
+  private readonly availabilityTracker = new AvailabilityTracker();
+  private readonly sentRequestIds = new Set<string>();
+
   public constructor(private readonly transport: SidecarTransport) {}
 
   public async initialize(input: InitializeInput): Promise<InitializeResult> {
-    return validateInitializeResult(await this.transport.request("initialize", input));
+    const result = validateInitializeResult(
+      await this.transport.request("initialize", input)
+    );
+    this.availabilityTracker.applyNegotiation(result.capabilities);
+    return result;
   }
 
   public async acquireSession(
@@ -62,7 +76,47 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
     lease: ControllerLease,
     command: RuntimeCommand
   ): Promise<T> {
+    const capabilityId = commandCapabilityId(command.kind);
+    if (capabilityId !== undefined) {
+      const availability = this.availabilityTracker.availability(capabilityId);
+      if (!availability.available) {
+        return Promise.reject(
+          new CapabilityDeniedError({
+            code: availability.reason.code,
+            capabilityId,
+            retryable: false,
+            indeterminate: false,
+          })
+        );
+      }
+    }
+
+    const requestId = toRequestId(command);
+    if (requestId !== undefined) {
+      if (this.sentRequestIds.has(requestId)) {
+        throw new CapabilityDeniedError({
+          code: "REQUEST_ALREADY_SENT",
+          capabilityId,
+          retryable: false,
+          indeterminate: false,
+        });
+      }
+      this.sentRequestIds.add(requestId);
+    }
+
     return this.transport.request("command", { lease, command });
+  }
+
+  public capabilities(): readonly CapabilityDescriptor[] {
+    return this.availabilityTracker.capabilities();
+  }
+
+  public availability(capabilityId: string): OperationAvailability {
+    const query = this.availabilityTracker.availability(capabilityId);
+    if (query.available) {
+      return { available: true };
+    }
+    return { available: false, reason: { code: query.reason.code } };
   }
 
   public async snapshot(
@@ -265,4 +319,31 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 
 function invalid(subject: string): never {
   throw new Error(`Invalid ${subject} from DSH Sidecar.`);
+}
+
+const MUTATION_COMMAND_KINDS = new Set([
+  "session.acquire",
+  "session.transfer-controller",
+  "session.submit-prompt",
+  "session.cancel",
+  "session.steer",
+]);
+
+/**
+ * Derives the request identity for a mutation command. Callers that already
+ * attach an explicit requestId keep it; otherwise one is synthesized from the
+ * session/turn identity so retries of the same logical mutation reuse it and
+ * the supervisor ledger keeps the effect at exactly once.
+ */
+function toRequestId(command: RuntimeCommand): string | undefined {
+  if (command.requestId !== undefined) {
+    return command.requestId;
+  }
+  if (!MUTATION_COMMAND_KINDS.has(command.kind)) {
+    return undefined;
+  }
+  if (command.sessionId === undefined || command.turnId === undefined) {
+    return undefined;
+  }
+  return `${command.sessionId}:${command.turnId}`;
 }

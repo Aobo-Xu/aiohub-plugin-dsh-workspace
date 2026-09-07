@@ -15,6 +15,9 @@ use aio_dsh_protocol::{
     SandboxLevel, SandboxStatus, SessionCommand, SessionNotification, SessionResult,
     SnapshotRequest, SteerRequest, SubmitPromptRequest, TransferControllerRequest,
 };
+use aio_dsh_supervisor::idempotency::{
+    MutationLedger, MutationRecord, capability_for_command, request_id_of,
+};
 use aio_dsh_supervisor::{
     PlatformTarget, RedactionPolicy, Supervisor, SupervisorConfig,
     lifecycle::{LifecycleEvent, LifecycleMachine},
@@ -38,6 +41,9 @@ const ENV_PREWARM: &str = "AIO_DSH_SUPERVISOR_PREWARM";
 const ENV_TELEMETRY: &str = "AIO_DSH_SUPERVISOR_TELEMETRY";
 const ENV_CRASH_TOKEN: &str = "AIO_DSH_E2E_CRASH_TOKEN";
 const INTERRUPTED_TURN_LEDGER_FILE: &str = "interrupted-turns.json";
+/// Bounded exactly-once window: how many recent mutation records the in-memory
+/// ledger keeps per connection. Old entries are evicted FIFO-style.
+const MUTATION_LEDGER_CAPACITY: usize = 512;
 
 fn main() -> ExitCode {
     match run() {
@@ -267,6 +273,8 @@ struct StdioDriver {
     redaction: RedactionPolicy,
     crash_token: Option<String>,
     controller_leases: BTreeMap<String, LeaseRecord>,
+    mutation_ledger: MutationLedger,
+    negotiated_capabilities: BTreeSet<String>,
     interrupted_turns_path: PathBuf,
     interrupted_turns: InterruptedTurnLedger,
     runtime_executable: PathBuf,
@@ -293,6 +301,8 @@ impl StdioDriver {
             redaction,
             crash_token,
             controller_leases: BTreeMap::new(),
+            mutation_ledger: MutationLedger::new(MUTATION_LEDGER_CAPACITY),
+            negotiated_capabilities: BTreeSet::new(),
             interrupted_turns: load_interrupted_turns(&interrupted_turns_path)?,
             interrupted_turns_path,
             runtime_executable,
@@ -522,8 +532,11 @@ impl StdioDriver {
             .and_then(|_| self.supervisor.initialize(&request));
 
         match result {
-            Ok(_) => {
+            Ok(negotiated) => {
                 self.initialized = true;
+                self.mutation_ledger.begin_generation(&generation_id);
+                self.negotiated_capabilities =
+                    negotiated.stable_capabilities.iter().cloned().collect();
                 self.lifecycle.apply(LifecycleEvent::DshQuiescent {
                     jobs: 0,
                     interactions: 0,
@@ -629,37 +642,95 @@ impl StdioDriver {
             );
         }
 
+        // Capability gate: every mutation is checked against the negotiated
+        // capability set from initialize before it can reach the Host path.
+        if let Some(capability_id) = capability_for_command(&command)
+            && !self.negotiated_capabilities.contains(capability_id)
+        {
+            return self.reject_command(
+                &envelope,
+                session_id_for_command(&command),
+                lease_id_for_command(&command),
+                turn_id_for_command(&command),
+                "capability-not-negotiated",
+                &format!("capability {capability_id} was not negotiated for this connection"),
+            );
+        }
+
+        // Exactly-once gate: reserve the request identity before the mutation
+        // runs. A retransmission of a completed request replays the recorded
+        // frames; anything else is rejected or starts a fresh reservation.
+        let request_id = request_id_of(&command).map(str::to_owned);
+        if let Some(request_id) = request_id
+            && let Some(record) = self.mutation_ledger.begin(&active_generation, &request_id)
+        {
+            return match record {
+                MutationRecord::Completed(frames) => Ok(CommandOutcome {
+                    frames,
+                    exit_code: None,
+                }),
+                MutationRecord::Pending | MutationRecord::Indeterminate => self.reject_command(
+                    &envelope,
+                    session_id_for_command(&command),
+                    lease_id_for_command(&command),
+                    turn_id_for_command(&command),
+                    "request-in-flight",
+                    "a mutation with this requestId is already in flight or its outcome is unknown; retry with a new requestId after the current outcome resolves",
+                ),
+            };
+        }
+
         match command {
-            SessionCommand::Acquire(request) => self.handle_acquire(envelope, request),
-            SessionCommand::TransferController(request) => self.handle_transfer(
-                envelope,
-                request.session_id,
-                request.lease_id,
-                request.target_view_id,
-            ),
-            SessionCommand::SubmitPrompt(request) => self.handle_submit_like(
-                envelope,
-                request.session_id,
-                request.lease_id,
-                request.turn_id,
-                request.input,
-                "submit-prompt",
-            ),
-            SessionCommand::Cancel(request) => self.handle_accepting_mutation(
-                envelope,
-                request.session_id,
-                request.lease_id,
-                Some(request.turn_id),
-                "cancel-requested",
-            ),
-            SessionCommand::Steer(request) => self.handle_submit_like(
-                envelope,
-                request.session_id,
-                request.lease_id,
-                request.turn_id,
-                request.input,
-                "steer",
-            ),
+            SessionCommand::Acquire(request) => {
+                let request_id = request.request_id.clone();
+                let outcome = self.handle_acquire(envelope, request)?;
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
+            SessionCommand::TransferController(request) => {
+                let request_id = request.request_id.clone();
+                let outcome = self.handle_transfer(
+                    envelope,
+                    request.session_id,
+                    request.lease_id,
+                    request.target_view_id,
+                )?;
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
+            SessionCommand::SubmitPrompt(request) => {
+                let request_id = request.request_id.clone();
+                let outcome = self.handle_submit_like(
+                    envelope,
+                    request.session_id,
+                    request.lease_id,
+                    request.turn_id,
+                    request.input,
+                    "submit-prompt",
+                )?;
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
+            SessionCommand::Cancel(request) => {
+                let request_id = request.request_id.clone();
+                let outcome = self.handle_accepting_mutation(
+                    envelope,
+                    request.session_id,
+                    request.lease_id,
+                    Some(request.turn_id),
+                    "cancel-requested",
+                )?;
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
+            SessionCommand::Steer(request) => {
+                let request_id = request.request_id.clone();
+                let outcome = self.handle_submit_like(
+                    envelope,
+                    request.session_id,
+                    request.lease_id,
+                    request.turn_id,
+                    request.input,
+                    "steer",
+                )?;
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
             SessionCommand::Snapshot(request) => Ok(CommandOutcome::frame(self.response_frame(
                 &envelope,
                 ResponsePayload::Session(SessionResult::Snapshot(
@@ -674,6 +745,31 @@ impl StdioDriver {
                 )),
             )?)),
         }
+    }
+
+    /// Records the outcome of one mutation execution in the ledger. Successful
+    /// outcomes store their frames so a retransmission replays them verbatim
+    /// (downstream effect count stays at one); downstream rejections free the
+    /// reservation; a crash leaves the request indeterminate.
+    fn settle_mutation(
+        &mut self,
+        generation_id: &str,
+        request_id: &str,
+        outcome: CommandOutcome,
+    ) -> Result<CommandOutcome, MainError> {
+        if outcome.exit_code == Some(CRASH_EXIT_CODE) {
+            self.mutation_ledger.interrupt(generation_id, request_id);
+        } else if outcome
+            .frames
+            .iter()
+            .any(|frame| frame.contains("\"accepted\":false") || frame.contains("command-rejected"))
+        {
+            self.mutation_ledger.discard(generation_id, request_id);
+        } else {
+            self.mutation_ledger
+                .complete(generation_id, request_id, outcome.frames.clone());
+        }
+        Ok(outcome)
     }
 
     fn handle_acquire(
@@ -1256,7 +1352,6 @@ impl StdioDriver {
             .domain_generation_id()
             .unwrap_or("connection-stopped")
     }
-
     fn should_crash(&self, input: &serde_json::Value) -> bool {
         let Some(expected) = self.crash_token.as_deref() else {
             return false;
@@ -1281,7 +1376,10 @@ fn resident_session_command(
 ) -> Result<SessionCommand, String> {
     let session_id = required_host_param(params, "sessionId")?;
     // Hosts that predate explicit request identity fall back to a stable,
-    // sequence-derived identity so retries stay idempotent.
+    // sequence-derived identity. True exactly-once semantics for retransmitted
+    // mutations are enforced separately by the MutationLedger, which dedupes
+    // by requestId (including this fallback) after capability, generation and
+    // lease fencing.
     let fallback_request_id = params
         .get("requestId")
         .and_then(serde_json::Value::as_str)
