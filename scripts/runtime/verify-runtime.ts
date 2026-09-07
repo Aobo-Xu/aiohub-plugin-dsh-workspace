@@ -291,9 +291,34 @@ async function runtimeFromLock(
 ): Promise<VerifiedRuntime> {
   const payload = JSON.parse(await readFile(path, "utf8")) as
     | ReturnType<typeof singlePlatformLock>
+    | { releases?: unknown[] }
     | undefined;
   if (payload === undefined) {
     throw new Error(`RUNTIME_LOCK_INVALID: ${path}`);
+  }
+  if (Array.isArray(payload.releases)) {
+    // A multi-release catalog verifies its pinned first release; the
+    // remaining entries are immutable test fixtures, never production
+    // inputs.
+    const lock = await loadRuntimeLock(path);
+    const spec = lock.platforms[platform];
+    if (!spec) {
+      throw new Error(`RUNTIME_PLATFORM_UNSUPPORTED: ${platform}`);
+    }
+    return {
+      version: lock.version,
+      platform,
+      root,
+      source: lock.source,
+      artifactState: spec.artifactState,
+      files: spec.files,
+      license: lock.licenseResult.spdx,
+      contractHash: lock.contractHash,
+      runtimeClosure: spec.runtimeClosure,
+      cyclonedxPath: lock.cyclonedxPath,
+      nodePkgTarget: spec.nodePkgTarget,
+      toolchain: lock.toolchain,
+    };
   }
   if ("platforms" in payload) {
     const lock = await loadRuntimeLock(path);

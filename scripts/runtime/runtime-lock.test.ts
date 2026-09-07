@@ -10,9 +10,9 @@ import {
   DSH_CONTRACT_HASH,
   loadRuntimeLock,
   loadRuntimeLockCatalog,
-  selectRuntimeByEvidence,
   officialWheelStatus,
   resolveRuntime,
+  selectRuntimeByEvidence,
   type RuntimeLockEntry,
   type VerifiedRuntime,
 } from "./resolve-runtime.ts";
@@ -238,6 +238,9 @@ describe("dual-release runtime baseline fixtures", () => {
         source: "official-wheel-metadata",
       });
       expect(entry!.cyclonedxPath).toBe("sbom/runtime.cdx.json");
+      expect(entry!.officialWheel.status).toBe(
+        wheelSha256 === undefined ? "acquisition-pending" : "available",
+      );
       const platform = entry!.platforms[rc1Platform];
       expect(platform.platform).toBe(rc1Platform);
       expect(platform.pythonTarget).toBe("win_amd64");
@@ -290,6 +293,68 @@ describe("dual-release runtime baseline fixtures", () => {
         capabilities: { capabilities: [] },
       }),
     ).toBeUndefined();
+  });
+
+  it("never reports an acquisition-pending wheel as available", async () => {
+    const catalog = await loadRuntimeLockCatalog();
+    const pending = catalog.releases.find(
+      (entry) => entry.version === "0.1.3-alpha.2",
+    )!;
+
+    // officialWheelStatus must not fabricate availability for pending wheels.
+    const status = officialWheelStatus(pending, "win32-x64");
+    expect(status).toMatchObject({ status: "acquisition-pending" });
+    expect(status.sha256).toBe("0".repeat(64));
+
+    const rc1 = catalog.releases.find(
+      (entry) => entry.version === "0.1.2-rc.1",
+    )!;
+    expect(officialWheelStatus(rc1, "win32-x64")).toMatchObject({
+      status: "available",
+      sha256: "390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f",
+    });
+  });
+
+  it("never selects an acquisition-pending baseline as a usable runtime", async () => {
+    const catalog = await loadRuntimeLockCatalog();
+
+    // Exact-tag capability evidence must not surface the pending entry.
+    expect(
+      selectRuntimeByEvidence(catalog, {
+        schemaVersion: 1,
+        capabilities: { capabilities: ["dsh-v0.1.3-alpha.2"] },
+      }),
+    ).toBeUndefined();
+
+    // The base capability still resolves to the acquirable pinned release.
+    const rc1 = selectRuntimeByEvidence(catalog, {
+      schemaVersion: 1,
+      capabilities: { capabilities: ["dsh"] },
+    });
+    expect(rc1!.officialWheel.status).toBe("available");
+  });
+
+  it("resolves the pinned release when a catalog lock is the only input", async () => {
+    // loadRuntimeLock over the repository catalog (no local runtime-lock.json)
+    // must keep selecting the pinned rc.1 release, including its wheel source.
+    const lock = await loadRuntimeLock(
+      join(repositoryRoot, "runtime-lock", "dsh-runtime.json"),
+    );
+    expect(lock.version).toBe("0.1.2-rc.1");
+    expect(lock.source.sha256).toBe(
+      "390bd8cd5f8700fc609c58e1ccb78091d5c8c6e11c21656e284e0f68da0e148f",
+    );
+  });
+
+  it("verifies a catalog lock by its pinned release without runtime errors", async () => {
+    // runtimeFromLock-based CLI verification over the repository catalog must
+    // resolve the pinned rc.1 entry, not crash on the catalog shape.
+    const lock = await loadRuntimeLock(
+      join(repositoryRoot, "runtime-lock", "dsh-runtime.json"),
+    );
+    const spec = lock.platforms["win32-x64"];
+    expect(spec.artifactState).toEqual({ status: "built" });
+    expect(spec.files.length).toBeGreaterThan(0);
   });
 });
 

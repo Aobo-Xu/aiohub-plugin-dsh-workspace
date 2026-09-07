@@ -61,7 +61,7 @@ export type RuntimeToolchain = {
 export type RuntimeArtifactState =
   | {
       status: "not-built";
-      reason: "native-runner-required";
+      reason: "native-runner-required" | "wheel-acquisition-pending";
     }
   | {
       status: "built";
@@ -82,7 +82,7 @@ export type RuntimePlatformSpec = {
 };
 
 export type OfficialWheelStatus = {
-  status: "available";
+  status: "available" | "acquisition-pending";
   platform: "win32-x64";
   url: string;
   sha256: string;
@@ -202,9 +202,17 @@ export function selectRuntimeByEvidence(
     return undefined;
   }
   if (capabilities.has(DSH_BASE_CAPABILITY)) {
-    return catalog.releases[0];
+    return isWheelAcquirable(catalog.releases[0])
+      ? catalog.releases[0]
+      : undefined;
   }
-  return catalog.releases.find((entry) => capabilities.has(entry.tag));
+  return catalog.releases.find(
+    (entry) => capabilities.has(entry.tag) && isWheelAcquirable(entry),
+  );
+}
+
+function isWheelAcquirable(entry: RuntimeLockEntry): boolean {
+  return entry.officialWheel?.status === "available";
 }
 
 function assertRuntimeLock(payload: unknown, path: string): RuntimeLockV1 {
@@ -256,8 +264,10 @@ export function officialWheelStatus(
   if (platform !== "win32-x64") {
     throw new Error(`RUNTIME_OFFICIAL_WHEEL_UNAVAILABLE: ${platform}`);
   }
+  // Propagate the entry's own status: a placeholder acquisition-pending
+  // wheel must never be reported as available.
   return {
-    status: "available",
+    status: lock.officialWheel?.status ?? "acquisition-pending",
     platform,
     url: lock.source.url,
     sha256: lock.source.sha256,

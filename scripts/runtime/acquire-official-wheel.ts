@@ -28,16 +28,60 @@ type AcquireDependencies = {
   generateSbom?: (lockPath: string, out: string) => Promise<void>;
 };
 
+type WheelReleaseLock = {
+  version?: string;
+  tag?: string;
+  source?: { kind?: string; url?: string; sha256?: string };
+  officialWheel?: { status?: string; url?: string; sha256?: string };
+  cyclonedxPath?: string;
+  platforms?: { "win32-x64"?: { files?: { path: string; sha256: string }[] } };
+};
+
+/**
+ * Resolves the lock input to the single release that may be acquired:
+ * - a single-release lock resolves to itself (pending → explicit reject);
+ * - a multi-release catalog resolves to the pinned first release, which
+ *   must be wheel-available; acquisition-pending entries are rejected with
+ *   an explicit code instead of being downloaded (and failing with 404).
+ */
+function selectAcquirableRelease(
+  payload: unknown,
+): { lock: WheelReleaseLock; pendingTag?: string } | undefined {
+  const candidate = payload as
+    | WheelReleaseLock
+    | { schemaVersion?: number; releases?: readonly unknown[] };
+  if (Array.isArray(candidate?.releases)) {
+    const releases = candidate.releases as readonly WheelReleaseLock[];
+    const pinned = releases[0];
+    if (pinned === undefined) {
+      return undefined;
+    }
+    if (pinned.officialWheel?.status === "acquisition-pending") {
+      return { lock: pinned, pendingTag: pinned.tag ?? pinned.version };
+    }
+    return { lock: pinned };
+  }
+  const single = candidate as WheelReleaseLock;
+  if (single?.officialWheel?.status === "acquisition-pending") {
+    return { lock: single, pendingTag: single.tag ?? single.version };
+  }
+  return single === undefined ? undefined : { lock: single };
+}
+
 const WHEEL_RUNTIME_ROOT = join("deepseek_harness_runtime", "runtime");
 export async function acquireOfficialWheel(
   options: AcquireOptions,
   dependencies: AcquireDependencies = {},
 ): Promise<{ platform: "win32-x64"; root: string }> {
-  const lock = JSON.parse(await readFile(options.lockPath, "utf8")) as {
-    source?: { kind?: string; url?: string; sha256?: string };
-    cyclonedxPath?: string;
-    platforms?: { "win32-x64"?: { files?: { path: string; sha256: string }[] } };
-  };
+  const parsed = JSON.parse(await readFile(options.lockPath, "utf8"));
+  const selected = selectAcquirableRelease(parsed);
+  if (selected === undefined) {
+    throw new Error("RUNTIME_WHEEL_LOCK_INVALID");
+  }
+  const { lock, pendingTag } = selected;
+  if (pendingTag !== undefined) {
+    throw new Error(`RUNTIME_WHEEL_ACQUISITION_PENDING: ${pendingTag}`);
+  }
   if (
     lock.source?.kind !== "official-wheel" ||
     typeof lock.source.url !== "string" ||

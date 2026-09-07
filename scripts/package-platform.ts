@@ -196,6 +196,39 @@ async function readPlatformLock(
     string,
     unknown
   >;
+
+  // A multi-release catalog: select the release that actually provides a
+  // built artifact for the platform (the pinned rc.1 release). A release
+  // whose wheel is still acquisition-pending yields an explicit diagnostic
+  // instead of a platform-mismatch error.
+  if (Array.isArray(lock.releases)) {
+    const releases = lock.releases as readonly Record<string, unknown>[];
+    for (const release of releases) {
+      const platforms = release.platforms;
+      if (typeof platforms !== "object" || platforms === null) {
+        continue;
+      }
+      const platformSpec = (platforms as Record<string, unknown>)[platform];
+      if (typeof platformSpec !== "object" || platformSpec === null) {
+        continue;
+      }
+      const artifactState = (platformSpec as Record<string, unknown>)
+        .artifactState as { status?: string } | undefined;
+      if (artifactState?.status === "built") {
+        const { platforms: _platforms, ...shared } = release;
+        return { ...shared, ...(platformSpec as Record<string, unknown>) };
+      }
+    }
+    const pendingTag = releases
+      .map(
+        (release) => (release as { tag?: string }).tag ?? release.version,
+      )
+      .join(", ");
+    throw new Error(
+      `PACKAGE_LOCK_PLATFORM_NOT_BUILT: ${platform} (no release provides a built artifact; releases: ${pendingTag})`,
+    );
+  }
+
   const platforms = lock.platforms;
   if (typeof platforms !== "object" || platforms === null) {
     if (lock.platform !== platform) {
