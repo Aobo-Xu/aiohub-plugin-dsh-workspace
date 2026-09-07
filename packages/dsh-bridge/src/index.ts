@@ -21,3 +21,34 @@ export { createPromptContribution } from "./prompt-contribution.js";
 export { createLiteralPlaceholderCodec } from "./literal-placeholder-codec.js";
 export { createTurnSnapshot } from "./turn-snapshot.js";
 export { createPolicy } from "./policy.js";
+
+export type {
+  AdapterIdentity,
+  AdapterPort,
+  AdapterProbe,
+  ArtifactPort,
+  DynamicRuntimePort,
+  InteractionPort,
+  MigrationInput,
+  MigrationResult,
+  NegotiatedCapabilities,
+  PresetPort,
+  ProjectionPort,
+  SessionPort,
+  TerminalPort,
+  WorkspacePort,
+  DshReleaseAdapter,
+} from "./adapters/types.js";
+export { ADAPTER_INCOMPATIBLE } from "./adapters/types.js";
+
+export type {
+  AdapterRegistry,
+  AdapterSelectionEvidence,
+  AdapterSelectionOutcome,
+  AdapterFactoryRegistration,
+  SettledAdapterHost,
+} from "./adapters/registry.js";
+export { createAdapterRegistry } from "./adapters/registry.js";
+
+export type { DshHost, HostPortName } from "./host/create-host.js";
+export { createDshHost } from "./host/create-host.js";
