@@ -25,6 +25,9 @@ export function createSnapshotRecovery(options: {
 
   return {
     accept(event) {
+      if (recoveryState === "resync-required") {
+        return "resync-required";
+      }
       if (
         currentGeneration !== undefined &&
         event.generation !== currentGeneration

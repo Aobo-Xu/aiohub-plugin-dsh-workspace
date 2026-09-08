@@ -52,6 +52,32 @@ describe("snapshot recovery", () => {
     expect(recovery.state()).toBe("resync-required");
   });
 
+  it("stops applying deltas until an authoritative snapshot repairs the gap", () => {
+    const recovery = createSnapshotRecovery({ maxQueue: 4 });
+    recovery.accept({
+      seq: 1,
+      generation: "generation-1",
+      durability: "durable",
+      correlationId: "event-1",
+      payload: event("start"),
+    });
+    recovery.accept({
+      seq: 3,
+      generation: "generation-1",
+      durability: "durable",
+      correlationId: "event-3",
+      payload: event("completed"),
+    });
+
+    expect(recovery.accept({
+      seq: 2,
+      generation: "generation-1",
+      durability: "durable",
+      correlationId: "event-2-late",
+      payload: event("tool-result"),
+    })).toBe("resync-required");
+  });
+
   it("coalesces duplicate events", () => {
     const recovery = createSnapshotRecovery({ maxQueue: 4 });
     const input = {
