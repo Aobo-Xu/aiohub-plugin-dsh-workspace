@@ -35,6 +35,11 @@ export type { TerminalHandle } from "./terminals/terminal-service.js";
 export { createPresetService } from "./presets/preset-service.js";
 export { createDynamicPackageService } from "./dynamic-runtime/dynamic-package-service.js";
 export { createMaintenanceService } from "./maintenance/maintenance-service.js";
+export { createSessionMigrationCoordinator } from "./maintenance/session-migration.js";
+export type {
+  ManagedBackupStore,
+  SessionMigrationAdapter,
+} from "./maintenance/session-migration.js";
 export { createExternalToolProvider } from "./external-tools/provider.js";
 export type {
   CatalogSnapshot,
