@@ -242,6 +242,9 @@ describe("adapter registry selection", () => {
     const registry = createAdapterRegistry().register(() => createFakeAdapter());
 
     // Selection evidence must be well-formed public service/schema identity.
+    // schemaVersion 0 is a legal schema identity (the official rc.1 session
+    // log format is 0); the malformed shapes are a non-safe-integer version
+    // or an empty service set, exercised below.
     const host = await registry.select({
       schemaVersion: 0,
       services: [],
@@ -253,6 +256,12 @@ describe("adapter registry selection", () => {
       reason: ADAPTER_INCOMPATIBLE,
     });
     expect(registry.lastSelection?.status).toBe("incompatible");
+
+    const nonInteger = await registry.select({
+      schemaVersion: Number.NaN,
+      services: ["gateway"],
+    } as unknown as Parameters<typeof registry.select>[0]);
+    expect(nonInteger).toBeNull();
   });
 
   it("rejects evidence that only carries a version prefix", async () => {

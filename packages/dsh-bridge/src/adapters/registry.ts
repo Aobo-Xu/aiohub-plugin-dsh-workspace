@@ -92,10 +92,13 @@ export function createAdapterRegistry(): AdapterRegistry {
     lastSelection = null;
 
     // Fail closed on malformed or version-flavoured evidence: selection is
-    // driven by public service/schema evidence only.
+    // driven by public service/schema evidence only. schemaVersion is a
+    // non-negative schema identity (the official rc.1 session log format is 0);
+    // only NaN/negative values are malformed.
     const evidenceValid =
       typeof evidence?.schemaVersion === "number" &&
-      evidence.schemaVersion > 0 &&
+      Number.isSafeInteger(evidence.schemaVersion) &&
+      evidence.schemaVersion >= 0 &&
       Array.isArray(evidence.services) &&
       evidence.services.length > 0;
     if (!evidenceValid) {
@@ -129,6 +132,13 @@ export function createAdapterRegistry(): AdapterRegistry {
         registration.schemaVersion !== undefined &&
         probe.schemaVersion !== registration.schemaVersion
       ) {
+        await disposeQuietly(candidate);
+        continue;
+      }
+      // The presented evidence must carry the adapter's own schema identity:
+      // a foreign schemaVersion never selects this factory even when its
+      // service list happens to cover the required services.
+      if (evidence.schemaVersion !== probe.schemaVersion) {
         await disposeQuietly(candidate);
         continue;
       }
