@@ -1050,8 +1050,11 @@ impl StdioDriver {
         fs::create_dir_all(&self.dsh_home)?;
         fs::create_dir_all(&workspace)?;
 
+        let runtime_patch = self.ensure_headless_runtime_patch()?;
         let result = Command::new(&self.runtime_executable)
-            .args(["--profile", "headless", &prompt])
+            .args(["--profile", "headless", "--patch"])
+            .arg(&runtime_patch)
+            .arg(&prompt)
             .current_dir(&workspace)
             .env("DSH_HOME", &self.dsh_home)
             .env("DSH_TELEMETRY_DISABLED", "1")
@@ -1112,6 +1115,22 @@ impl StdioDriver {
             exit_code: None,
             disposition: MutationDisposition::Executed,
         })
+    }
+
+    fn ensure_headless_runtime_patch(&self) -> Result<PathBuf, MainError> {
+        fs::create_dir_all(&self.dsh_home)?;
+        let path = self.dsh_home.join("aio-host-headless.patch.yml");
+        if path.exists() {
+            let existing = fs::read_to_string(&path)?;
+            if existing != headless_runtime_patch_contents() {
+                return Err(MainError::Config(
+                    "managed headless runtime patch was modified".to_owned(),
+                ));
+            }
+        } else {
+            fs::write(&path, headless_runtime_patch_contents())?;
+        }
+        Ok(path)
     }
 
     fn handle_accepting_mutation(
@@ -1499,6 +1518,10 @@ fn required_json_string(value: &serde_json::Value, name: &str) -> Result<String,
         .ok_or_else(|| MainError::Config(format!("missing required coding turn field {name}")))
 }
 
+fn headless_runtime_patch_contents() -> &'static str {
+    "- id: session-title-llm\n  disabled: true\n"
+}
+
 fn load_interrupted_turns(path: &std::path::Path) -> Result<InterruptedTurnLedger, MainError> {
     match fs::read(path) {
         Ok(bytes) => {
@@ -1601,5 +1624,18 @@ fn turn_id_for_command(command: &SessionCommand) -> Option<String> {
         SessionCommand::SubmitPrompt(request) => Some(request.turn_id.clone()),
         SessionCommand::Cancel(request) => Some(request.turn_id.clone()),
         SessionCommand::Steer(request) => Some(request.turn_id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod host_runtime_patch_tests {
+    use super::headless_runtime_patch_contents;
+
+    #[test]
+    fn disables_only_the_optional_session_title_provider() {
+        let patch = headless_runtime_patch_contents();
+        assert!(patch.contains("id: session-title-llm"));
+        assert!(patch.contains("disabled: true"));
+        assert_eq!(patch.lines().count(), 2);
     }
 }
