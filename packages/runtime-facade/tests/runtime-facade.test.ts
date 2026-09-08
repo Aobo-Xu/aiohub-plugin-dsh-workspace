@@ -33,6 +33,8 @@ const controllerLease: ControllerLease = {
 
 const snapshot: SessionSnapshot = {
   ...runtimeRef,
+  source: "dsh",
+  provenance: { adapterId: "fixture-adapter" },
   sessionId: "session-1",
   cursor: "cursor-1",
   seq: 1,

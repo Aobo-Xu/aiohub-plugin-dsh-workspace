@@ -191,6 +191,9 @@ function validateSessionSnapshot(value: unknown): SessionSnapshot {
   if (
     !isRecord(value) ||
     !hasRuntimeRef(value) ||
+    value.source !== "dsh" ||
+    !isRecord(value.provenance) ||
+    typeof value.provenance.adapterId !== "string" ||
     typeof value.sessionId !== "string" ||
     typeof value.cursor !== "string" ||
     !isNonNegativeSafeInteger(seq) ||
@@ -201,6 +204,13 @@ function validateSessionSnapshot(value: unknown): SessionSnapshot {
 
   return {
     ...toRuntimeRef(value),
+    source: "dsh",
+    provenance: {
+      adapterId: value.provenance.adapterId,
+      ...(typeof value.provenance.releaseCommit === "string"
+        ? { releaseCommit: value.provenance.releaseCommit }
+        : {}),
+    },
     sessionId: value.sessionId,
     cursor: value.cursor,
     seq,

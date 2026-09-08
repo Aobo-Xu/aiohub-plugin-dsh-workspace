@@ -9,6 +9,8 @@ function event(kind: string, data: unknown = {}): RuntimeEvent {
 function snapshot(seq: number, cursor: string, facts: readonly RuntimeEvent[] = []): SessionSnapshot {
   return {
     contractHash: "contract-hash-1",
+    source: "dsh",
+    provenance: { adapterId: "fixture-adapter" },
     cursor,
     domainGenerationId: "generation-1",
     durableFacts: facts,
@@ -18,6 +20,16 @@ function snapshot(seq: number, cursor: string, facts: readonly RuntimeEvent[] = 
 }
 
 describe("snapshot recovery", () => {
+  it("rejects a snapshot without DSH durable facts", async () => {
+    const recovery = createSnapshotRecovery({ maxQueue: 4 });
+
+    await expect(recovery.applySnapshot({
+      ...snapshot(0, "cursor-0"),
+      durableFacts: [],
+    })).rejects.toMatchObject({ code: "INVALID_DSH_SNAPSHOT" });
+    expect(recovery.state()).toBe("resync-required");
+  });
+
   it("marks a sequence gap as requiring resync", () => {
     const recovery = createSnapshotRecovery({ maxQueue: 4 });
 

@@ -22,5 +22,9 @@ export function createEventService(options: { maxQueue: number }) {
     size() {
       return queue.size();
     },
+
+    diagnostics() {
+      return queue.diagnostics();
+    },
   };
 }

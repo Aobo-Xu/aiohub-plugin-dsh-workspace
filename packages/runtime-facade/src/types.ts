@@ -69,10 +69,17 @@ export type RuntimeEvent = {
 };
 
 export type SessionSnapshot = RuntimeRef & {
+  source: "dsh";
+  provenance: {
+    adapterId: string;
+    releaseCommit?: string;
+  };
   sessionId: string;
   cursor: string;
   seq: number;
   durableFacts: readonly RuntimeEvent[];
+  workspaceId?: string;
+  lineage?: { parentSessionId?: string; forkedAtSeq?: number };
 };
 
 export type OperationMode = "read" | "mutate" | "observe";

@@ -1,5 +1,6 @@
 import type { RuntimeEvent, SessionSnapshot } from "../../runtime-facade/src/types.js";
 import type { QueuedRuntimeEvent } from "./bounded-queue.js";
+import { BridgeCommandError } from "./controller-leases.js";
 
 export type RecoveryState = "ready" | "resync-required";
 
@@ -53,6 +54,15 @@ export function createSnapshotRecovery(options: {
     },
 
     async applySnapshot(snapshot) {
+      if (
+        snapshot.source !== "dsh" ||
+        snapshot.durableFacts.length === 0 ||
+        snapshot.seq < 0 ||
+        snapshot.cursor.length === 0
+      ) {
+        recoveryState = "resync-required";
+        throw new BridgeCommandError("INVALID_DSH_SNAPSHOT");
+      }
       currentGeneration = snapshot.domainGenerationId;
       lastSeq = snapshot.seq;
       recoveryState = "ready";

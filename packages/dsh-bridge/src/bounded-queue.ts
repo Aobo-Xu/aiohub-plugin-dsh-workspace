@@ -17,6 +17,11 @@ export interface BoundedQueue {
   peek(): QueuedRuntimeEvent | undefined;
   push(event: QueuedRuntimeEvent): QueuePushResult;
   size(): number;
+  diagnostics(): {
+    overloaded: number;
+    droppedDisposable: number;
+    evictedDisposable: number;
+  };
 }
 
 export function createBoundedQueue(options: { maxQueue: number }): BoundedQueue {
@@ -25,6 +30,11 @@ export function createBoundedQueue(options: { maxQueue: number }): BoundedQueue 
   }
 
   const items: QueuedRuntimeEvent[] = [];
+  const diagnosticState = {
+    overloaded: 0,
+    droppedDisposable: 0,
+    evictedDisposable: 0,
+  };
 
   return {
     items() {
@@ -59,6 +69,8 @@ export function createBoundedQueue(options: { maxQueue: number }): BoundedQueue 
 
       if (items.length >= options.maxQueue) {
         if (event.durability === "disposable") {
+          diagnosticState.overloaded += 1;
+          diagnosticState.droppedDisposable += 1;
           return "overloaded";
         }
 
@@ -67,10 +79,12 @@ export function createBoundedQueue(options: { maxQueue: number }): BoundedQueue 
         );
 
         if (disposableIndex === -1) {
+          diagnosticState.overloaded += 1;
           return "overloaded";
         }
 
         items.splice(disposableIndex, 1);
+        diagnosticState.evictedDisposable += 1;
       }
 
       items.push(event);
@@ -79,6 +93,10 @@ export function createBoundedQueue(options: { maxQueue: number }): BoundedQueue 
 
     size() {
       return items.length;
+    },
+
+    diagnostics() {
+      return { ...diagnosticState };
     },
   };
 }

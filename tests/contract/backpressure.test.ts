@@ -8,6 +8,26 @@ function event(kind: string, data: unknown = {}): RuntimeEvent {
 }
 
 describe("bounded queue", () => {
+  it("exposes overload diagnostics without hiding durable admission failures", () => {
+    const queue = createBoundedQueue({ maxQueue: 1 });
+    queue.push({
+      seq: 1,
+      generation: "generation-1",
+      durability: "durable",
+      correlationId: "event-1",
+      payload: event("start"),
+    });
+
+    expect(queue.push({
+      seq: 2,
+      generation: "generation-1",
+      durability: "durable",
+      correlationId: "event-2",
+      payload: event("error"),
+    })).toBe("overloaded");
+    expect(queue.diagnostics()).toEqual({ overloaded: 1, droppedDisposable: 0, evictedDisposable: 0 });
+  });
+
   it("keeps durable events when disposable events overflow", () => {
     const queue = createBoundedQueue({ maxQueue: 2 });
 
