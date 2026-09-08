@@ -32,6 +32,15 @@ export { createTerminalService } from "./terminals/terminal-service.js";
 export type { TerminalHandle } from "./terminals/terminal-service.js";
 export { createPresetService } from "./presets/preset-service.js";
 export { createDynamicPackageService } from "./dynamic-runtime/dynamic-package-service.js";
+export { createMaintenanceService } from "./maintenance/maintenance-service.js";
+export { createExternalToolProvider } from "./external-tools/provider.js";
+export type {
+  CatalogSnapshot,
+  ExternalToolProvider,
+  ProviderDescriptor,
+  ToolInvocationEvent,
+  ToolInvocationRequest,
+} from "./external-tools/provider.js";
 export { createBoundedQueue } from "./bounded-queue.js";
 export { createProfileAdapter } from "./profile-adapter.js";
 export { createCredentialProvider } from "./credential-provider.js";
