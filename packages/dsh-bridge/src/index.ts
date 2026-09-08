@@ -28,6 +28,8 @@ export { createDiffArtifactService } from "./artifacts/diffs.js";
 export type { DiffArtifact, DiffReviewInput } from "./artifacts/diffs.js";
 export { normalizePresenter } from "./presenters/normalize-presenter.js";
 export type { PresenterInput, PresenterRecord } from "./presenters/normalize-presenter.js";
+export { normalizeExecutionProjection } from "./presenters/execution-projection.js";
+export type { ExecutionProjectionInput } from "./presenters/execution-projection.js";
 export { createTerminalService } from "./terminals/terminal-service.js";
 export type { TerminalHandle } from "./terminals/terminal-service.js";
 export { createPresetService } from "./presets/preset-service.js";
