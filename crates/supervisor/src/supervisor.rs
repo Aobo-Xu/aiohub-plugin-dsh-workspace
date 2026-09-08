@@ -10,7 +10,9 @@ use aio_dsh_protocol::{
 use thiserror::Error;
 
 use crate::home::{DshHomeLayout, HomeError};
-use crate::process::{ManagedProcess, ProcessBackend, ProcessPolicy, SpawnSpec};
+use crate::process::{
+    ManagedHostProcess, ManagedProcess, ProcessBackend, ProcessPolicy, SpawnSpec,
+};
 use crate::runtime::{DSH_CONTRACT_HASH, PlatformTarget, RuntimeValidationError, RuntimeValidator};
 
 const SUPERVISOR_CAPABILITIES: &[&str] = &["session", "snapshot"];
@@ -187,6 +189,7 @@ struct SupervisorState {
     owner: SupervisorOwner,
     home: Option<DshHomeLayout>,
     child: Option<ManagedProcess>,
+    host: Option<ManagedHostProcess>,
 }
 
 impl Supervisor {
@@ -212,6 +215,12 @@ impl Supervisor {
             .map_err(|_| SupervisorError::StatePoisoned)
             .map(|state| state.owner)
             .unwrap_or(SupervisorOwner::Unavailable)
+    }
+
+    /// The platform target this supervisor was configured for; the driver
+    /// reads it once when constructing its stdio loop state.
+    pub fn platform(&self) -> PlatformTarget {
+        self.config.platform
     }
 
     pub fn secret_value(&self, _value: &str) -> Result<SecretValue, SupervisorError> {
@@ -317,6 +326,9 @@ impl Supervisor {
 
     fn rollback_startup(&self) -> Result<(), SupervisorError> {
         let mut state = self.lock_state()?;
+        if let Some(mut host) = state.host.take() {
+            self.backend.shutdown_host(&mut host, None)?;
+        }
         if let Some(mut child) = state.child.take() {
             self.backend
                 .terminate_tree(&mut child, ProcessPolicy::default().terminate_grace)?;
@@ -329,14 +341,68 @@ impl Supervisor {
     }
 
     pub fn host_process_id(&self) -> Option<u32> {
-        self.lock_state()
-            .ok()
-            .and_then(|state| state.child.as_ref().map(ManagedProcess::id))
+        self.lock_state().ok().and_then(|state| {
+            state
+                .host
+                .as_ref()
+                .map(ManagedHostProcess::id)
+                .or_else(|| state.child.as_ref().map(ManagedProcess::id))
+        })
+    }
+
+    pub fn start_host(
+        &self,
+        mut spec: SpawnSpec,
+        initialize_request: &str,
+    ) -> Result<String, SupervisorError> {
+        let mut state = self.lock_state()?;
+        if state.host.is_some() {
+            return Err(SupervisorError::Config(
+                "managed Host is already running".to_owned(),
+            ));
+        }
+        let home = state
+            .home
+            .as_ref()
+            .ok_or_else(|| SupervisorError::Config("managed Home is not initialized".to_owned()))?;
+        home.apply_environment(&mut spec.env);
+        let mut host = self.backend.spawn_host(spec)?;
+        match host.request_line(initialize_request) {
+            Ok(response) => {
+                state.host = Some(host);
+                Ok(response)
+            }
+            Err(error) => {
+                let _ = self.backend.shutdown_host(&mut host, None);
+                Err(SupervisorError::Io(error))
+            }
+        }
+    }
+
+    pub fn host_request(&self, request: &str) -> Result<String, SupervisorError> {
+        let mut state = self.lock_state()?;
+        let host = state
+            .host
+            .as_mut()
+            .ok_or_else(|| SupervisorError::Config("managed Host is not running".to_owned()))?;
+        Ok(host.request_line(request)?)
+    }
+
+    pub fn stop_host(&self, shutdown_request: &str) -> Result<(), SupervisorError> {
+        let mut state = self.lock_state()?;
+        if let Some(mut host) = state.host.take() {
+            self.backend
+                .shutdown_host(&mut host, Some(shutdown_request))?;
+        }
+        Ok(())
     }
 
     pub fn shutdown(&self) -> Result<(), SupervisorError> {
         let mut state = self.lock_state()?;
         state.owner = SupervisorOwner::Stopping;
+        if let Some(mut host) = state.host.take() {
+            self.backend.shutdown_host(&mut host, None)?;
+        }
         if let Some(mut child) = state.child.take() {
             self.backend
                 .terminate_tree(&mut child, ProcessPolicy::default().terminate_grace)?;

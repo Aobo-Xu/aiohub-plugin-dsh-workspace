@@ -2,10 +2,31 @@
 # The managed Coding workstation must not upload session telemetry.
 - id: session-telemetry-otel
   disabled: true
+- id: session-title-llm
+  disabled: true
 
-# Staged attach point for the AIO-managed bridge. @aiohub/dsh-bridge declares
-# its Cordis bundle and public service surface in a later task; keeping the row
-# id-targeted makes that move additive.
+# The official headless runner is one-shot and owns stdout.  AIO replaces only
+# that surface; the official DSH service composition remains authoritative.
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+
+# Public Host controllers used by the release adapter.  These are official DSH
+# extension points; the AIO bridge does not import Web BFF or private registry
+# modules.
 - insert:
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: session-controller
+      name: '@deepseek-ai/dsh-api-session-controller'
+    - id: workspace-controller
+      name: '@deepseek-ai/dsh-api-workspace-controller'
+    - id: terminal
+      name: '@deepseek-ai/dsh-terminal'
+    - id: terminal-shell
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        shellDialect: pwsh
     - id: aiohub-dsh-bridge
-      name: '@aiohub/dsh-bridge'
+      name: __AIO_DSH_HOST_MODULE__

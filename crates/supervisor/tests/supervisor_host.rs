@@ -169,6 +169,24 @@ fn managed_environment_reaches_the_host_child_process() {
     );
 }
 
+#[test]
+fn managed_host_process_round_trips_jsonl_and_closes_stdin_for_shutdown() {
+    let backend = ProcessBackend::create().expect("create process backend");
+    let mut process = backend
+        .spawn_host(jsonl_echo_process())
+        .expect("spawn managed host");
+
+    assert_eq!(
+        process
+            .request_line(r#"{"id":1,"method":"initialize"}"#)
+            .expect("host response"),
+        r#"{"id":1,"type":"result"}"#
+    );
+    backend
+        .shutdown_host(&mut process, Some(r#"{"id":2,"method":"shutdown"}"#))
+        .expect("graceful host shutdown");
+}
+
 fn long_running_process() -> SpawnSpec {
     #[cfg(windows)]
     {
@@ -225,6 +243,36 @@ fn environment_probe(output: &Path, env: BTreeMap<String, OsString>) -> SpawnSpe
             ],
             current_dir: None,
             env,
+        }
+    }
+}
+
+fn jsonl_echo_process() -> SpawnSpec {
+    #[cfg(windows)]
+    {
+        SpawnSpec {
+            program: "powershell.exe".into(),
+            args: vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "$first=[Console]::In.ReadLine(); [Console]::Out.WriteLine('{\"id\":1,\"type\":\"result\"}'); [Console]::Out.Flush(); $null=[Console]::In.ReadLine()".into(),
+            ],
+            current_dir: None,
+            env: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        SpawnSpec {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "read first; printf '%s\\n' '{\"id\":1,\"type\":\"result\"}'; read second".into(),
+            ],
+            current_dir: None,
+            env: BTreeMap::new(),
         }
     }
 }

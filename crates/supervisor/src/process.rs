@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
-#[cfg(unix)]
-use std::process::Command;
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
 
 const TERMINATE_GRACE: Duration = Duration::from_secs(3);
 
@@ -44,6 +41,42 @@ impl ProcessExit {
 pub struct ManagedProcess {
     pid: u32,
     inner: ManagedProcessInner,
+}
+
+/// Long-lived Host child with line-delimited request/response pipes.  It is
+/// assigned to the same process tree boundary as ordinary managed children.
+pub struct ManagedHostProcess {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl ManagedHostProcess {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn request_line(&mut self, request: &str) -> io::Result<String> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "host stdin is closed"))?;
+        stdin.write_all(request.as_bytes())?;
+        stdin.write_all(b"\n")?;
+        stdin.flush()?;
+        let mut response = String::new();
+        if self.stdout.read_line(&mut response)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "host stdout closed before a response",
+            ));
+        }
+        Ok(response.trim_end_matches(['\r', '\n']).to_owned())
+    }
+
+    fn close_stdin(&mut self) {
+        self.stdin.take();
+    }
 }
 
 enum ManagedProcessInner {
@@ -128,6 +161,90 @@ impl ProcessBackend {
                 "unsupported platform",
             ))
         }
+    }
+
+    pub fn spawn_host(&self, spec: SpawnSpec) -> io::Result<ManagedHostProcess> {
+        let mut command = Command::new(&spec.program);
+        command
+            .args(&spec.args)
+            .envs(&spec.env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Some(current_dir) = spec.current_dir {
+            command.current_dir(current_dir);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = command.spawn()?;
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+            let Self::Windows(job) = self;
+            let assigned = unsafe { AssignProcessToJobObject(job.handle, child.as_raw_handle()) };
+            if assigned == 0 {
+                let error = io::Error::last_os_error();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+
+        let stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture host stdin")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture host stdout")
+        })?;
+        Ok(ManagedHostProcess {
+            child,
+            stdin: Some(stdin),
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    pub fn shutdown_host(
+        &self,
+        process: &mut ManagedHostProcess,
+        request: Option<&str>,
+    ) -> io::Result<()> {
+        if let Some(request) = request {
+            let _ = process.request_line(request);
+        }
+        process.close_stdin();
+        let deadline = Instant::now() + ProcessPolicy::default().terminate_grace;
+        while Instant::now() < deadline {
+            if process.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        #[cfg(windows)]
+        {
+            let Self::Windows(job) = self;
+            job.terminate()?;
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(process.child.id() as i32), libc::SIGKILL);
+        }
+        #[cfg(not(any(windows, unix)))]
+        process.child.kill()?;
+        process.child.wait().map(|_| ())
     }
 
     pub fn terminate_tree(&self, process: &mut ManagedProcess, grace: Duration) -> io::Result<()> {

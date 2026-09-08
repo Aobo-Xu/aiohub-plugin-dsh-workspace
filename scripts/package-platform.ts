@@ -23,6 +23,8 @@ export type PackagePlatformOptions = {
   output: string;
   support: SupportLevel;
   supervisorPath?: string;
+  hostBundlePath?: string;
+  hostPatchPath?: string;
 };
 
 export type PackagePlatformResult = {
@@ -96,6 +98,19 @@ export async function packagePlatform(
     throw new Error(`PACKAGE_SUPERVISOR_MISSING: ${supervisorPath}`);
   }
 
+  const hostBundlePath = options.hostBundlePath ?? join(options.root, "dist", "host", "aio-dsh-host.mjs");
+  const hostPatchPath = options.hostPatchPath ?? join(options.root, "profiles", "aio-coding", "cordis.patch.yml");
+  const hostBundleDestination = join(staging, "host", "aio-dsh-host.mjs");
+  const hostPatchDestination = join(staging, "host", "cordis.patch.yml");
+  await mkdir(dirname(hostBundleDestination), { recursive: true });
+  try {
+    await copyFile(hostBundlePath, hostBundleDestination);
+    await copyFile(hostPatchPath, hostPatchDestination);
+  } catch {
+    await rm(staging, { recursive: true, force: true });
+    throw new Error(`PACKAGE_HOST_MISSING: ${hostBundlePath} or ${hostPatchPath}`);
+  }
+
   const releaseLock = {
     ...lock,
     releaseClosure: [
@@ -103,6 +118,16 @@ export async function packagePlatform(
         path: manifest.sidecar.executable[runtime.platform],
         sha256: await sha256File(supervisorDestination),
         executable: true,
+      },
+      {
+        path: "host/aio-dsh-host.mjs",
+        sha256: await sha256File(hostBundleDestination),
+        executable: false,
+      },
+      {
+        path: "host/cordis.patch.yml",
+        sha256: await sha256File(hostPatchDestination),
+        executable: false,
       },
       ...runtime.files,
     ],
@@ -128,6 +153,8 @@ export async function packagePlatform(
     "licenses/runtime-THIRD_PARTY_NOTICES.md",
     "licenses/aio-dsh-supervisor-Apache-2.0.txt",
     manifest.sidecar.executable[runtime.platform],
+    "host/aio-dsh-host.mjs",
+    "host/cordis.patch.yml",
     ...runtime.files.map((file) => file.path),
   ];
   const archive = spawnSync("tar", ["-a", "-cf", output, ...entries], {

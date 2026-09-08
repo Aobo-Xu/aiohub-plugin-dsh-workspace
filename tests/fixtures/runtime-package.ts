@@ -8,6 +8,8 @@ export type PackageFixture = {
   root: string;
   runtime: VerifiedRuntime;
   supervisorPath: string;
+  hostBundlePath: string;
+  hostPatchPath: string;
 };
 
 export async function createPackageFixture(
@@ -27,6 +29,14 @@ export async function createPackageFixture(
   );
   await mkdir(dirname(supervisorPath), { recursive: true });
   await writeFile(supervisorPath, "supervisor binary fixture");
+  const hostBundlePath = join(root, "fixture-host", "aio-dsh-host.mjs");
+  const hostPatchPath = join(root, "fixture-host", "cordis.patch.yml");
+  await mkdir(dirname(hostBundlePath), { recursive: true });
+  await writeFile(hostBundlePath, "export const name = 'aiohub-dsh-host';\n");
+  await writeFile(
+    hostPatchPath,
+    "- insert:\n    - id: aiohub-dsh-host\n      name: ./aio-dsh-host.mjs\n",
+  );
   await writeFile(join(root, "LICENSE"), "Apache License fixture\n");
 
   const runtimeBinaryName =
@@ -199,6 +209,8 @@ export async function createPackageFixture(
       toolchain: platformLock.toolchain,
     },
     supervisorPath,
+    hostBundlePath,
+    hostPatchPath,
   };
 }
 

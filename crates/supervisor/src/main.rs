@@ -9,18 +9,21 @@ use std::time::Duration;
 
 use aio_dsh_protocol::{
     AcquireSessionRequest, CURRENT_PROTOCOL_VERSION, CancelRequest, CommandAccepted,
-    CommandEnvelope, CommandPayload, ControllerLease, Envelope, LeaseMode, NotificationEnvelope,
-    NotificationPayload, PlatformFacts, PlatformKey, ResponseEnvelope, ResponsePayload,
-    RuntimeEvent, RuntimeProvenance, RuntimeState, RuntimeStateNotification, SandboxBackend,
-    SandboxLevel, SandboxStatus, SessionCommand, SessionNotification, SessionResult,
-    SnapshotRequest, SteerRequest, SubmitPromptRequest, TransferControllerRequest,
+    CommandEnvelope, CommandPayload, ControllerLease, Envelope, InteractionDecision,
+    InteractionKind, InteractionRequest, InteractionResolutionReason, InteractionResolved,
+    InteractionResponse, LeaseMode, NotificationEnvelope, NotificationPayload, PlatformFacts,
+    PlatformKey, ResponseEnvelope, ResponsePayload, RuntimeEvent, RuntimeProvenance, RuntimeState,
+    RuntimeStateNotification, SandboxBackend, SandboxLevel, SandboxStatus, SessionCommand,
+    SessionNotification, SessionResult, SnapshotRequest, SteerRequest, SubmitPromptRequest,
+    TransferControllerRequest,
 };
 use aio_dsh_supervisor::idempotency::{
     MutationLedger, MutationRecord, capability_for_command, request_id_of,
 };
 use aio_dsh_supervisor::{
-    PlatformTarget, RedactionPolicy, Supervisor, SupervisorConfig,
+    PlatformTarget, RedactionPolicy, SpawnSpec, Supervisor, SupervisorConfig,
     lifecycle::{LifecycleEvent, LifecycleMachine},
+    materialize_host_patch,
     runtime::DSH_CONTRACT_HASH,
     supervisor::SupervisorError,
 };
@@ -30,6 +33,15 @@ use serde_json::json;
 const DEFAULT_PLATFORM: &str = "win32-x64";
 const DEFAULT_HOST_API_VERSION: u16 = 3;
 const CRASH_EXIT_CODE: u8 = 86;
+
+/// Host-side binding inputs resolved once from the release layout and the
+/// managed plugin data directory.
+struct HostBinding {
+    enabled: bool,
+    module: PathBuf,
+    patch_template: PathBuf,
+    managed_patch: PathBuf,
+}
 
 const ENV_PLUGIN_DATA_DIR: &str = "AIO_DSH_SUPERVISOR_PLUGIN_DATA_DIR";
 const ENV_HOST_PLUGIN_DATA_DIR: &str = "AIOHUB_PLUGIN_DATA_DIR";
@@ -64,21 +76,36 @@ fn main() -> ExitCode {
 fn run() -> Result<u8, MainError> {
     let config = load_config()?;
     let redaction = config.redaction.clone();
-    let platform = config.platform;
     let interrupted_turns_path = interrupted_turns_path(&config.plugin_data_dir);
     let dsh_home = config.plugin_data_dir.join("data").join("dsh-home");
     let runtime_executable = config
         .runtime_root
         .join("deepseek-harness-sdk-runtime-win-x64.exe");
+    let release_root = config
+        .runtime_root
+        .parent()
+        .ok_or_else(|| MainError::Config("runtime root has no release parent".to_owned()))?;
+    let host_module = release_root.join("host").join("aio-dsh-host.mjs");
+    let host_patch_template = release_root.join("host").join("cordis.patch.yml");
+    let managed_host_patch = config
+        .plugin_data_dir
+        .join("runtime")
+        .join("aio-host.patch.yml");
+    let host_enabled = host_module.is_file() && host_patch_template.is_file();
     let supervisor = Supervisor::new(config)?;
     let mut driver = StdioDriver::new(
         supervisor,
-        platform,
         redaction,
         std::env::var(ENV_CRASH_TOKEN).ok(),
         interrupted_turns_path,
         runtime_executable,
         dsh_home,
+        HostBinding {
+            enabled: host_enabled,
+            module: host_module,
+            patch_template: host_patch_template,
+            managed_patch: managed_host_patch,
+        },
     )?;
     driver.run(io::stdin().lock(), io::stdout().lock())
 }
@@ -312,6 +339,14 @@ struct StdioDriver {
     interrupted_turns: InterruptedTurnLedger,
     runtime_executable: PathBuf,
     dsh_home: PathBuf,
+    host_enabled: bool,
+    host_module: PathBuf,
+    host_patch_template: PathBuf,
+    managed_host_patch: PathBuf,
+    host_environment: BTreeMap<String, std::ffi::OsString>,
+    host_sessions: BTreeSet<String>,
+    pending_interactions: BTreeMap<String, InteractionRequest>,
+    resolved_interactions: BTreeSet<String>,
     next_lease_id: AtomicU64,
     next_wire_error_id: u64,
     initialized: bool,
@@ -320,13 +355,20 @@ struct StdioDriver {
 impl StdioDriver {
     fn new(
         supervisor: Supervisor,
-        platform: PlatformTarget,
         redaction: RedactionPolicy,
         crash_token: Option<String>,
         interrupted_turns_path: PathBuf,
         runtime_executable: PathBuf,
         dsh_home: PathBuf,
+        host: HostBinding,
     ) -> Result<Self, MainError> {
+        let HostBinding {
+            enabled: host_enabled,
+            module: host_module,
+            patch_template: host_patch_template,
+            managed_patch: managed_host_patch,
+        } = host;
+        let platform = supervisor.platform();
         Ok(Self {
             supervisor,
             platform,
@@ -340,6 +382,14 @@ impl StdioDriver {
             interrupted_turns_path,
             runtime_executable,
             dsh_home,
+            host_enabled,
+            host_module,
+            host_patch_template,
+            managed_host_patch,
+            host_environment: BTreeMap::new(),
+            host_sessions: BTreeSet::new(),
+            pending_interactions: BTreeMap::new(),
+            resolved_interactions: BTreeSet::new(),
             next_lease_id: AtomicU64::new(1),
             next_wire_error_id: 1,
             initialized: false,
@@ -385,6 +435,7 @@ impl StdioDriver {
     ) -> Result<CommandOutcome, MainError> {
         let outcome = match command.method.as_str() {
             "initialize" => {
+                self.configure_host_environment(&command.params)?;
                 let request = host_initialize_request(&command.params)?;
                 self.handle_initialize(
                     Envelope::new(
@@ -409,6 +460,26 @@ impl StdioDriver {
                             generation,
                             command.id,
                             CommandPayload::Session(session_command),
+                        ))?
+                    }
+                    Err(message) => CommandOutcome::frame(self.error_event_frame(
+                        command.id,
+                        format!("host-command-{}", command.id),
+                        None,
+                        self.current_generation().to_owned(),
+                        "invalid-host-params",
+                        &message,
+                    )?),
+                }
+            }
+            "interaction.respond" => {
+                match resident_interaction_response(&command.params, self.current_generation()) {
+                    Ok(response) => {
+                        let generation = self.current_generation().to_owned();
+                        self.handle_command(Envelope::new(
+                            generation,
+                            command.id,
+                            CommandPayload::Interaction(response),
                         ))?
                     }
                     Err(message) => CommandOutcome::frame(self.error_event_frame(
@@ -484,6 +555,17 @@ impl StdioDriver {
                         _ => {}
                     }
                 }
+                Some("interaction") => {
+                    let interactions = result_data
+                        .entry("interactions".to_owned())
+                        .or_insert_with(|| json!([]));
+                    if let Some(items) = interactions.as_array_mut() {
+                        items.push(payload["data"].clone());
+                    }
+                }
+                Some("interaction-resolved") => {
+                    result_data.insert("interactionResolved".to_owned(), payload["data"].clone());
+                }
                 Some("error") => {
                     error = Some(payload["data"].clone());
                 }
@@ -531,14 +613,7 @@ impl StdioDriver {
                 self.handle_shutdown(envelope.seq, envelope.correlation_id)
             }
             CommandPayload::Session(command) => self.handle_session_command(envelope, command),
-            CommandPayload::Interaction(response) => Ok(self.reject_command(
-                &envelope,
-                Some(response.session_id),
-                Some(response.lease_id),
-                None,
-                "unsupported-interaction",
-                "interaction responses are not available before the bridge is wired",
-            )?),
+            CommandPayload::Interaction(response) => self.handle_interaction(envelope, response),
         }
     }
 
@@ -567,10 +642,27 @@ impl StdioDriver {
 
         match result {
             Ok(negotiated) => {
+                let mut host_capabilities = negotiated.stable_capabilities.clone();
+                if self.host_enabled {
+                    match self.start_managed_host() {
+                        Ok(capabilities) => host_capabilities.extend(capabilities),
+                        Err(error) => {
+                            self.lifecycle.apply(LifecycleEvent::StartFailed);
+                            let _ = self.supervisor.shutdown();
+                            return Ok(CommandOutcome::frame(self.error_event_frame(
+                                envelope.seq,
+                                format!("{}:error", envelope.message_id),
+                                envelope.correlation_id,
+                                generation_id,
+                                "host-initialize-failed",
+                                &error.to_string(),
+                            )?));
+                        }
+                    }
+                }
                 self.initialized = true;
                 self.mutation_ledger.begin_generation(&generation_id);
-                self.negotiated_capabilities =
-                    negotiated.stable_capabilities.iter().cloned().collect();
+                self.negotiated_capabilities = host_capabilities.into_iter().collect();
                 self.lifecycle.apply(LifecycleEvent::DshQuiescent {
                     jobs: 0,
                     interactions: 0,
@@ -613,6 +705,10 @@ impl StdioDriver {
         seq: u64,
         correlation_id: Option<String>,
     ) -> Result<CommandOutcome, MainError> {
+        if self.host_enabled {
+            let request = json!({ "id": 0, "method": "shutdown", "params": {} }).to_string();
+            self.supervisor.stop_host(&request)?;
+        }
         let generation_id = self.current_generation().to_owned();
         let mut frames = Vec::new();
         for (session_id, record) in std::mem::take(&mut self.controller_leases) {
@@ -742,13 +838,7 @@ impl StdioDriver {
             }
             SessionCommand::Cancel(request) => {
                 let request_id = request.request_id.clone();
-                let outcome = self.handle_accepting_mutation(
-                    envelope,
-                    request.session_id,
-                    request.lease_id,
-                    Some(request.turn_id),
-                    "cancel-requested",
-                )?;
+                let outcome = self.handle_cancel(envelope, request)?;
                 self.settle_mutation(&active_generation, &request_id, outcome)
             }
             SessionCommand::Steer(request) => {
@@ -763,20 +853,183 @@ impl StdioDriver {
                 )?;
                 self.settle_mutation(&active_generation, &request_id, outcome)
             }
-            SessionCommand::Snapshot(request) => Ok(CommandOutcome::frame(self.response_frame(
-                &envelope,
-                ResponsePayload::Session(SessionResult::Snapshot(
-                    aio_dsh_protocol::SessionSnapshot {
-                        domain_generation_id: active_generation,
-                        contract_hash: DSH_CONTRACT_HASH.to_owned(),
-                        session_id: request.session_id,
-                        cursor: "cursor-0".to_owned(),
-                        seq: envelope.seq,
-                        durable_facts: Vec::new(),
-                    },
-                )),
-            )?)),
+            SessionCommand::Snapshot(request) => {
+                if self.host_enabled {
+                    self.handle_host_snapshot(envelope, request)
+                } else {
+                    Ok(CommandOutcome::frame(self.response_frame(
+                        &envelope,
+                        ResponsePayload::Session(SessionResult::Snapshot(
+                            aio_dsh_protocol::SessionSnapshot {
+                                domain_generation_id: active_generation,
+                                contract_hash: DSH_CONTRACT_HASH.to_owned(),
+                                session_id: request.session_id,
+                                cursor: "cursor-0".to_owned(),
+                                seq: envelope.seq,
+                                durable_facts: Vec::new(),
+                            },
+                        )),
+                    )?))
+                }
+            }
         }
+    }
+
+    fn handle_cancel(
+        &mut self,
+        envelope: Envelope<CommandPayload>,
+        request: CancelRequest,
+    ) -> Result<CommandOutcome, MainError> {
+        if let Some(rejected) = self.validate_controller_lease(
+            &envelope,
+            &request.session_id,
+            &request.lease_id,
+            Some(&request.turn_id),
+        )? {
+            return Ok(rejected);
+        }
+        if self.host_enabled {
+            let result =
+                self.host_result("session.cancel", json!({ "sessionId": request.session_id }))?;
+            if result.get("accepted").and_then(serde_json::Value::as_bool) != Some(true) {
+                return self.reject_command(
+                    &envelope,
+                    Some(request.session_id),
+                    Some(request.lease_id),
+                    Some(request.turn_id),
+                    "cancel-not-accepted",
+                    "DSH did not accept cancellation for the active session",
+                );
+            }
+        }
+        self.handle_accepting_mutation(
+            envelope,
+            request.session_id,
+            request.lease_id,
+            Some(request.turn_id),
+            "cancel-requested",
+        )
+    }
+
+    fn handle_interaction(
+        &mut self,
+        envelope: Envelope<CommandPayload>,
+        response: InteractionResponse,
+    ) -> Result<CommandOutcome, MainError> {
+        if !self.initialized {
+            return self.reject_command(
+                &envelope,
+                Some(response.session_id),
+                Some(response.lease_id),
+                None,
+                "not-initialized",
+                "initialize must complete before interaction responses",
+            );
+        }
+        if response.domain_generation_id != self.current_generation()
+            || envelope.domain_generation_id != self.current_generation()
+        {
+            return self.reject_command(
+                &envelope,
+                Some(response.session_id),
+                Some(response.lease_id),
+                None,
+                "stale-generation",
+                "interaction response belongs to an inactive generation",
+            );
+        }
+        if let Some(rejected) = self.validate_controller_lease(
+            &envelope,
+            &response.session_id,
+            &response.lease_id,
+            None,
+        )? {
+            return Ok(rejected);
+        }
+        let Some(request) = self
+            .pending_interactions
+            .get(&response.correlation_id)
+            .cloned()
+        else {
+            let code = if self
+                .resolved_interactions
+                .contains(&response.correlation_id)
+            {
+                "interaction-resolved"
+            } else {
+                "unknown-interaction"
+            };
+            return self.reject_command(
+                &envelope,
+                Some(response.session_id),
+                Some(response.lease_id),
+                None,
+                code,
+                "interaction is not pending in the active generation",
+            );
+        };
+        if request.session_id != response.session_id {
+            return self.reject_command(
+                &envelope,
+                Some(response.session_id),
+                Some(response.lease_id),
+                None,
+                "interaction-session-mismatch",
+                "interaction belongs to a different DSH session",
+            );
+        }
+        if request.kind == InteractionKind::Question {
+            return self.reject_command(
+                &envelope,
+                Some(response.session_id),
+                Some(response.lease_id),
+                None,
+                "capability-not-negotiated",
+                "the active DSH adapter does not advertise question interactions",
+            );
+        }
+        if self.host_enabled {
+            self.host_result(
+                "interaction.respond",
+                json!({
+                    "sessionId": response.session_id,
+                    "correlationId": response.correlation_id,
+                    "decision": host_interaction_decision(&response.decision),
+                    "data": response.data,
+                }),
+            )?;
+        }
+        self.pending_interactions.remove(&response.correlation_id);
+        self.resolved_interactions
+            .insert(response.correlation_id.clone());
+        let reason = match response.decision {
+            InteractionDecision::Cancel => InteractionResolutionReason::Cancelled,
+            InteractionDecision::Timeout => InteractionResolutionReason::Timeout,
+            _ => InteractionResolutionReason::Answered,
+        };
+        Ok(CommandOutcome {
+            frames: vec![
+                self.response_frame(
+                    &envelope,
+                    ResponsePayload::Session(SessionResult::Accepted(CommandAccepted {
+                        accepted: true,
+                    })),
+                )?,
+                self.interaction_resolved_frame(
+                    envelope.seq,
+                    envelope.correlation_id,
+                    InteractionResolved {
+                        domain_generation_id: self.current_generation().to_owned(),
+                        contract_hash: DSH_CONTRACT_HASH.to_owned(),
+                        session_id: response.session_id,
+                        correlation_id: response.correlation_id,
+                        reason,
+                    },
+                )?,
+            ],
+            exit_code: None,
+            disposition: MutationDisposition::Executed,
+        })
     }
 
     /// Records the outcome of one mutation execution in the ledger. Successful
@@ -1014,7 +1267,14 @@ impl StdioDriver {
         }
 
         if input.get("provider").is_some() {
-            return self.handle_coding_turn(envelope, session_id, lease_id, turn_id, input);
+            return self.handle_coding_turn(
+                envelope,
+                session_id,
+                lease_id,
+                turn_id,
+                input,
+                event_kind == "steer",
+            );
         }
 
         self.handle_accepting_mutation(envelope, session_id, lease_id, Some(turn_id), event_kind)
@@ -1027,6 +1287,7 @@ impl StdioDriver {
         lease_id: String,
         turn_id: String,
         input: serde_json::Value,
+        steer: bool,
     ) -> Result<CommandOutcome, MainError> {
         let prompt = required_json_string(&input, "prompt")?;
         let workspace = PathBuf::from(required_json_string(&input, "workspace")?);
@@ -1049,6 +1310,54 @@ impl StdioDriver {
         }
         fs::create_dir_all(&self.dsh_home)?;
         fs::create_dir_all(&workspace)?;
+
+        if self.host_enabled {
+            if !self.host_sessions.contains(&session_id) {
+                self.host_result(
+                    "session.create",
+                    json!({
+                        "sessionId": session_id,
+                        "cwd": workspace,
+                    }),
+                )?;
+                self.host_sessions.insert(session_id.clone());
+            }
+            let host_result = self.host_result(
+                "session.submitPrompt",
+                json!({
+                    "sessionId": session_id,
+                    "requestId": turn_id,
+                    "mode": if steer { "steer" } else { "queue" },
+                    "content": [{ "type": "text", "text": prompt }],
+                }),
+            )?;
+            let accepted = host_result
+                .get("accepted")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            return Ok(CommandOutcome {
+                frames: vec![
+                    self.response_frame(
+                        &envelope,
+                        ResponsePayload::Session(SessionResult::Accepted(CommandAccepted {
+                            accepted,
+                        })),
+                    )?,
+                    self.session_event_frame(SessionEventSpec {
+                        seq: envelope.seq,
+                        message_id: format!("turn-started-{turn_id}"),
+                        correlation_id: envelope.correlation_id,
+                        generation_id: self.current_generation().to_owned(),
+                        session_id: Some(session_id),
+                        turn_id: Some(turn_id),
+                        kind: "turn-started".to_owned(),
+                        data: json!({ "leaseId": lease_id, "source": "dsh-host" }),
+                    })?,
+                ],
+                exit_code: None,
+                disposition: MutationDisposition::Executed,
+            });
+        }
 
         let runtime_patch = self.ensure_headless_runtime_patch()?;
         let result = Command::new(&self.runtime_executable)
@@ -1115,6 +1424,175 @@ impl StdioDriver {
             exit_code: None,
             disposition: MutationDisposition::Executed,
         })
+    }
+
+    fn start_managed_host(&self) -> Result<Vec<String>, MainError> {
+        materialize_host_patch(
+            &self.host_patch_template,
+            &self.managed_host_patch,
+            &self.host_module,
+        )?;
+        let mut env = self.host_environment.clone();
+        env.insert("DSH_TELEMETRY_DISABLED".to_owned(), "1".into());
+        let spec = SpawnSpec {
+            program: self.runtime_executable.clone(),
+            args: vec![
+                "--profile".to_owned(),
+                "headless".to_owned(),
+                "--patch".to_owned(),
+                self.managed_host_patch.to_string_lossy().into_owned(),
+            ],
+            current_dir: Some(self.dsh_home.clone()),
+            env,
+        };
+        fs::create_dir_all(&self.dsh_home)?;
+        let response = self.supervisor.start_host(
+            spec,
+            &json!({ "id": 0, "method": "initialize", "params": {} }).to_string(),
+        )?;
+        let value: serde_json::Value = serde_json::from_str(&response).map_err(|error| {
+            MainError::Config(format!("invalid Host initialize response: {error}"))
+        })?;
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("result")
+            || value
+                .pointer("/data/state")
+                .and_then(serde_json::Value::as_str)
+                != Some("ready")
+        {
+            return Err(MainError::Config(format!(
+                "Host did not reach ready: {}",
+                self.redaction.redact_text(&response)
+            )));
+        }
+        let capabilities = value
+            .pointer("/data/capabilities")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| MainError::Config("Host ready omitted capabilities".to_owned()))?
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .get("capabilityId")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if capabilities.is_empty() {
+            return Err(MainError::Config(
+                "Host ready advertised no capabilities".to_owned(),
+            ));
+        }
+        Ok(capabilities)
+    }
+
+    fn host_result(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, MainError> {
+        let id = self.next_wire_error_id;
+        self.next_wire_error_id = self.next_wire_error_id.saturating_add(1);
+        let response = self
+            .supervisor
+            .host_request(&json!({ "id": id, "method": method, "params": params }).to_string())?;
+        let value: serde_json::Value = serde_json::from_str(&response)
+            .map_err(|error| MainError::Config(format!("invalid Host response: {error}")))?;
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+            return Err(MainError::Config(format!(
+                "Host {method} failed: {}",
+                self.redaction.redact_text(&response)
+            )));
+        }
+        Ok(value
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    fn handle_host_snapshot(
+        &mut self,
+        envelope: Envelope<CommandPayload>,
+        request: SnapshotRequest,
+    ) -> Result<CommandOutcome, MainError> {
+        let requested_session_id = request.session_id.clone();
+        let data = self.host_result(
+            "session.snapshot",
+            json!({
+                "sessionId": request.session_id,
+                "domainGenerationId": self.current_generation(),
+                "contractHash": DSH_CONTRACT_HASH,
+            }),
+        )?;
+        let snapshot = aio_dsh_protocol::SessionSnapshot {
+            domain_generation_id: required_json_string(&data, "domainGenerationId")?.to_owned(),
+            contract_hash: required_json_string(&data, "contractHash")?.to_owned(),
+            session_id: required_json_string(&data, "sessionId")?.to_owned(),
+            cursor: required_json_string(&data, "cursor")?.to_owned(),
+            seq: data
+                .get("seq")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| MainError::Config("Host snapshot omitted seq".to_owned()))?,
+            durable_facts: serde_json::from_value(data.get("durableFacts").cloned().ok_or_else(
+                || MainError::Config("Host snapshot omitted durableFacts".to_owned()),
+            )?)
+            .map_err(|error| MainError::Config(format!("invalid Host durable facts: {error}")))?,
+        };
+        self.pending_interactions
+            .retain(|_, interaction| interaction.session_id != requested_session_id);
+        let mut frames = Vec::new();
+        if let Some(interactions) = data
+            .get("activeInteractions")
+            .and_then(serde_json::Value::as_array)
+        {
+            for value in interactions {
+                let correlation_id = required_json_string(value, "correlationId")?.to_owned();
+                if self.resolved_interactions.contains(&correlation_id) {
+                    continue;
+                }
+                let session_id = required_json_string(value, "sessionId")?.to_owned();
+                let interaction = InteractionRequest {
+                    domain_generation_id: self.current_generation().to_owned(),
+                    contract_hash: DSH_CONTRACT_HASH.to_owned(),
+                    session_id,
+                    correlation_id: correlation_id.clone(),
+                    kind: InteractionKind::Approval,
+                    data: json!({
+                        "turnId": value.get("turnId"),
+                        "toolName": value.pointer("/data/toolName"),
+                        "callId": value.pointer("/data/callId"),
+                        "reason": value.pointer("/data/reason"),
+                    }),
+                };
+                self.pending_interactions
+                    .insert(correlation_id, interaction.clone());
+                frames.push(self.interaction_request_frame(envelope.seq, interaction)?);
+            }
+        }
+        frames.push(self.response_frame(
+            &envelope,
+            ResponsePayload::Session(SessionResult::Snapshot(snapshot)),
+        )?);
+        Ok(CommandOutcome::with_frames(frames))
+    }
+
+    fn configure_host_environment(&mut self, params: &serde_json::Value) -> Result<(), MainError> {
+        let Some(provider) = params.get("provider") else {
+            return Ok(());
+        };
+        let base_url = required_json_string(provider, "baseUrl")?;
+        let api_key = required_json_string(provider, "apiKey")?;
+        if !(base_url.starts_with("https://")
+            || base_url.starts_with("http://127.0.0.1:")
+            || base_url.starts_with("http://localhost:"))
+        {
+            return Err(MainError::Config(
+                "provider baseUrl must use HTTPS or an explicit loopback origin".to_owned(),
+            ));
+        }
+        self.host_environment
+            .insert("DEEPSEEK_BASE_URL".to_owned(), base_url.into());
+        self.host_environment
+            .insert("DEEPSEEK_API_KEY".to_owned(), api_key.into());
+        Ok(())
     }
 
     fn ensure_headless_runtime_patch(&self) -> Result<PathBuf, MainError> {
@@ -1387,6 +1865,41 @@ impl StdioDriver {
         .map_err(|error| MainError::Config(error.to_string()))
     }
 
+    fn interaction_request_frame(
+        &self,
+        seq: u64,
+        request: InteractionRequest,
+    ) -> Result<String, MainError> {
+        serde_json::to_string(&NotificationEnvelope(Envelope {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            contract_hash: DSH_CONTRACT_HASH.to_owned(),
+            domain_generation_id: self.current_generation().to_owned(),
+            seq,
+            message_id: format!("interaction:{}", request.correlation_id),
+            correlation_id: Some(request.correlation_id.clone()),
+            payload: NotificationPayload::Interaction(request),
+        }))
+        .map_err(|error| MainError::Config(error.to_string()))
+    }
+
+    fn interaction_resolved_frame(
+        &self,
+        seq: u64,
+        correlation_id: Option<String>,
+        resolved: InteractionResolved,
+    ) -> Result<String, MainError> {
+        serde_json::to_string(&NotificationEnvelope(Envelope {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            contract_hash: DSH_CONTRACT_HASH.to_owned(),
+            domain_generation_id: self.current_generation().to_owned(),
+            seq,
+            message_id: format!("interaction-resolved:{}", resolved.correlation_id),
+            correlation_id,
+            payload: NotificationPayload::InteractionResolved(resolved),
+        }))
+        .map_err(|error| MainError::Config(error.to_string()))
+    }
+
     fn issue_lease(&self, session_id: String, mode: LeaseMode) -> ControllerLease {
         let id = self.next_lease_id.fetch_add(1, Ordering::Relaxed);
         ControllerLease {
@@ -1498,6 +2011,38 @@ fn resident_session_command(
                 .map(str::to_owned),
         })),
         other => Err(format!("unsupported resident Sidecar method {other}")),
+    }
+}
+
+fn resident_interaction_response(
+    params: &serde_json::Value,
+    domain_generation_id: &str,
+) -> Result<InteractionResponse, String> {
+    let decision = match required_host_param(params, "decision")?.as_str() {
+        "allow" | "allow-once" => InteractionDecision::Allow,
+        "deny" => InteractionDecision::Deny,
+        "answer" => InteractionDecision::Answer,
+        "cancel" => InteractionDecision::Cancel,
+        "timeout" => InteractionDecision::Timeout,
+        other => return Err(format!("unsupported interaction decision {other}")),
+    };
+    Ok(InteractionResponse {
+        domain_generation_id: domain_generation_id.to_owned(),
+        session_id: required_host_param(params, "sessionId")?,
+        lease_id: required_host_param(params, "leaseId")?,
+        correlation_id: required_host_param(params, "correlationId")?,
+        decision,
+        data: params.get("data").cloned(),
+    })
+}
+
+fn host_interaction_decision(decision: &InteractionDecision) -> &'static str {
+    match decision {
+        InteractionDecision::Allow => "allow",
+        InteractionDecision::Deny => "deny",
+        InteractionDecision::Cancel => "cancel",
+        InteractionDecision::Timeout => "timeout",
+        InteractionDecision::Answer => "answer",
     }
 }
 

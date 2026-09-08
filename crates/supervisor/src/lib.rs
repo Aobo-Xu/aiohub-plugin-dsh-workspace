@@ -5,6 +5,7 @@
 
 pub mod credentials;
 pub mod home;
+pub mod host_patch;
 pub mod idempotency;
 pub mod lease;
 pub mod lifecycle;
@@ -16,10 +17,13 @@ pub mod supervisor;
 
 pub use credentials::Credentials;
 pub use home::{DshHomeLayout, HomeMode};
+pub use host_patch::materialize_host_patch;
 pub use idempotency::{MutationLedger, MutationRecord, MutationState};
 pub use lease::Lease;
 pub use lifecycle::Lifecycle;
-pub use process::{ManagedProcess, ProcessBackend, ProcessExit, ProcessPolicy, SpawnSpec};
+pub use process::{
+    ManagedHostProcess, ManagedProcess, ProcessBackend, ProcessExit, ProcessPolicy, SpawnSpec,
+};
 pub use recovery::Recovery;
 pub use runtime::{PlatformTarget, RuntimeValidator};
 pub use sandbox_status::SandboxStatus;

@@ -42,6 +42,8 @@ describe("installed DSH plugin package", () => {
       output,
       support: "supported",
       supervisorPath: fixture.supervisorPath,
+      hostBundlePath: fixture.hostBundlePath,
+      hostPatchPath: fixture.hostPatchPath,
     });
 
     expect(result.platform).toBe("win32-x64");
@@ -68,6 +70,12 @@ describe("installed DSH plugin package", () => {
         "utf8",
       ),
     ).toBe("supervisor binary fixture");
+    expect(
+      await readFile(join(installRoot, "host", "aio-dsh-host.mjs"), "utf8"),
+    ).toContain("aiohub-dsh-host");
+    expect(
+      await readFile(join(installRoot, "host", "cordis.patch.yml"), "utf8"),
+    ).toContain("aiohub-dsh-host");
 
     const runtimeLock = JSON.parse(
       await readFile(join(installRoot, "runtime-lock.json"), "utf8"),
@@ -82,6 +90,14 @@ describe("installed DSH plugin package", () => {
             .update("supervisor binary fixture")
             .digest("hex"),
           executable: true,
+        }),
+        expect.objectContaining({
+          path: "host/aio-dsh-host.mjs",
+          executable: false,
+        }),
+        expect.objectContaining({
+          path: "host/cordis.patch.yml",
+          executable: false,
         }),
       ]),
     );

@@ -784,7 +784,7 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
         CommandPayload::Session(SessionCommand::Cancel(aio_dsh_protocol::CancelRequest {
             request_id: "request-cancel".to_owned(),
             session_id: "session-guarded".to_owned(),
-            lease_id: original_lease_id,
+            lease_id: original_lease_id.clone(),
             turn_id: "turn-still-active".to_owned(),
         })),
         5,
@@ -799,10 +799,34 @@ fn binary_rejects_stale_and_unknown_leases_without_replacing_the_active_controll
     );
 
     harness.send(&command(
+        CommandPayload::Interaction(aio_dsh_protocol::InteractionResponse {
+            domain_generation_id: generation.clone(),
+            session_id: "session-guarded".to_owned(),
+            lease_id: original_lease_id.clone(),
+            correlation_id: "approval-missing".to_owned(),
+            decision: aio_dsh_protocol::InteractionDecision::Allow,
+            data: None,
+        }),
+        6,
+        &generation,
+    ));
+    let interaction_frames = harness.recv_json_frames(2);
+    assert!(interaction_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("accepted")
+            && frame["payload"]["data"]["data"]["accepted"] == json!(false)
+    }));
+    assert!(interaction_frames.iter().any(|frame| {
+        frame["payload"]["kind"] == json!("session")
+            && frame["payload"]["data"]["kind"] == json!("event")
+            && frame["payload"]["data"]["data"]["data"]["code"] == json!("unknown-interaction")
+    }));
+
+    harness.send(&command(
         CommandPayload::Shutdown(aio_dsh_protocol::ShutdownRequest {
             reason: ShutdownReason::UserStop,
         }),
-        6,
+        7,
         &generation,
     ));
     let _ = harness.recv_json_frames(2);

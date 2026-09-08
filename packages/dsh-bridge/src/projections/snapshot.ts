@@ -1,4 +1,5 @@
 import type { RuntimeEvent, SessionSnapshot } from "../../../runtime-facade/src/types.js";
+import { maskValue } from "../presenters/mask.js";
 
 type EventRecord = {
   type: string;
@@ -32,6 +33,7 @@ export function createAuthoritativeSnapshot(
     if (record.type !== "event" || event === undefined || !DURABLE_KINDS.test(event.type)) {
       continue;
     }
+    if (event.type === "user/message" && isInjectedContext(event.data)) continue;
     const data = event.data;
     const turnId = typeof data === "object" && data !== null && "turnId" in data && typeof data.turnId === "string"
       ? data.turnId
@@ -40,7 +42,7 @@ export function createAuthoritativeSnapshot(
       kind: event.type,
       sessionId: input.sessionId,
       ...(turnId === undefined ? {} : { turnId }),
-      data,
+      data: maskValue(data),
     });
   }
 
@@ -63,4 +65,12 @@ export function createAuthoritativeSnapshot(
     ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
     ...(input.lineage === undefined ? {} : { lineage: input.lineage }),
   };
+}
+
+function isInjectedContext(data: unknown): boolean {
+  if (typeof data !== "object" || data === null) return false;
+  const source = (data as { source?: unknown }).source;
+  return typeof source === "object"
+    && source !== null
+    && (source as { kind?: unknown }).kind !== "user";
 }

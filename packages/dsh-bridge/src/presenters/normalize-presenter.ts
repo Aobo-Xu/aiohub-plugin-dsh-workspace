@@ -39,17 +39,4 @@ export function normalizePresenter(input: PresenterInput): PresenterRecord {
   };
 }
 
-function maskValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(maskValue);
-  if (typeof value !== "object" || value === null) {
-    return typeof value === "string" ? maskText(value) : value;
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => {
-    if (/api[_-]?key|token|secret|password/i.test(key)) return [key, "***"];
-    return [key, maskValue(child)];
-  }));
-}
-
-function maskText(value: string): string {
-  return value.replace(/[A-Za-z]:\\[^\s]+/g, "<path>");
-}
+import { maskValue } from "./mask.js";

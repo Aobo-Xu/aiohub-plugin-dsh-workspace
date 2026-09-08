@@ -141,6 +141,8 @@ async function verifyZip(
     "licenses/runtime-THIRD_PARTY_NOTICES.md",
     "licenses/aio-dsh-supervisor-Apache-2.0.txt",
     "bin/win32-x64/aio-dsh-supervisor.exe",
+    "host/aio-dsh-host.mjs",
+    "host/cordis.patch.yml",
     "bin/deepseek-harness-sdk-runtime-win-x64.exe",
     "bin/deepseek-harness-sdk-runtime-win-x64-rg.exe",
     "sbom/runtime.cdx.json",
