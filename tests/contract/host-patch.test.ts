@@ -29,4 +29,26 @@ describe("managed DSH Host patch", () => {
     expect(rendered).not.toContain("__AIO_DSH_HOST_MODULE__");
     expect(rendered).not.toContain("!!js");
   });
+
+  it("enables full-text session search in the shipped patch template", async () => {
+    // Upstream ships session-query-sqlite with `openAt: never` (full-text
+    // search is opt-in). The managed workstation deployment must enable it
+    // through the documented patch-layer override with a durable index path
+    // inside the managed DSH Home; otherwise every negotiated session.search
+    // call fails with SESSION_QUERY_SEARCH_DISABLED at runtime.
+    const template = await readFile(
+      new URL("../../profiles/aio-coding/cordis.patch.yml", import.meta.url),
+      "utf8",
+    );
+    // Assert on effective YAML only: explanatory comments may quote the
+    // upstream `openAt: never` default without configuring it.
+    const effective = template
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(effective).toContain("id: session-query-sqlite");
+    expect(effective).toMatch(/openAt:\s*first-search/);
+    expect(effective).toContain("dshHomePath(");
+    expect(effective).not.toMatch(/openAt:\s*never/);
+  });
 });

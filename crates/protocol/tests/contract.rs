@@ -3,11 +3,13 @@ use std::fs;
 
 use aio_dsh_protocol::{
     CONTRACT_HASH, CapabilityDescriptor, CapabilityStability, CommandPayload, CompatibilityIssue,
-    Endpoint, Envelope, HostError, InitializeRequest, InteractionKind, InteractionPayload,
+    Endpoint, Envelope, HostCommand, HostError, HostMutationOperation, HostMutationRequest,
+    HostReadOperation, HostReadRequest, InitializeRequest, InteractionKind, InteractionPayload,
     InteractionRequest, InteractionResolutionReason, InteractionResolved, NotificationPayload,
     OperationAvailability, OperationMode, OverloadNotification, PlatformFacts, PlatformKey,
-    PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, SandboxBackend,
-    SandboxLevel, SandboxStatus, SessionCommand, UnavailableReason, negotiate_initialize,
+    PongResult, ProtocolError, ProtocolVersion, ResponsePayload, RuntimeProvenance, RuntimeState,
+    SandboxBackend, SandboxLevel, SandboxStatus, SessionCommand, UnavailableReason,
+    negotiate_initialize,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -44,6 +46,51 @@ fn initialize_request(
             .iter()
             .map(|value| (*value).to_owned())
             .collect(),
+    }
+}
+
+#[test]
+fn host_operations_are_typed_and_runtime_states_cover_maintenance_transitions() {
+    let read = CommandPayload::Host(HostCommand::Read(HostReadRequest {
+        operation: HostReadOperation::WorkspaceList,
+        input: json!({}),
+    }));
+    assert_eq!(
+        serde_json::to_value(read).expect("serialize host read"),
+        json!({
+            "kind": "host",
+            "data": {
+                "kind": "read",
+                "data": { "operation": "workspace.list", "input": {} }
+            }
+        })
+    );
+
+    let mutation = CommandPayload::Host(HostCommand::Mutate(HostMutationRequest {
+        operation: HostMutationOperation::SessionRestart,
+        request_id: "request-1".to_owned(),
+        session_id: Some("session-1".to_owned()),
+        lease_id: Some("lease-1".to_owned()),
+        input: json!({}),
+    }));
+    let encoded = serde_json::to_value(mutation).expect("serialize host mutation");
+    assert_eq!(
+        encoded["data"]["data"]["operation"],
+        json!("session.restart")
+    );
+    assert_eq!(encoded["data"]["data"]["requestId"], json!("request-1"));
+
+    for state in [
+        RuntimeState::Loading,
+        RuntimeState::Maintenance,
+        RuntimeState::Upgrading,
+        RuntimeState::Recovering,
+        RuntimeState::Incompatible,
+    ] {
+        assert!(matches!(
+            serde_json::to_value(state).expect("serialize runtime state"),
+            Value::String(_)
+        ));
     }
 }
 

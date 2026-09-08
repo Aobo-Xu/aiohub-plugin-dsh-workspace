@@ -500,7 +500,9 @@ impl Supervisor {
                 Err(SupervisorError::Protocol(error)) => ResponsePayload::Error(error),
                 Err(error) => return Err(error),
             },
-            CommandPayload::Session(_) | CommandPayload::Interaction(_) => {
+            CommandPayload::Session(_)
+            | CommandPayload::Host(_)
+            | CommandPayload::Interaction(_) => {
                 return Err(SupervisorError::Startup {
                     step: "unimplemented-command",
                 });

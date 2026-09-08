@@ -24,9 +24,45 @@ const OPERATION_CAPABILITY: Readonly<Record<string, string>> = Object.freeze({
   "session.steer": "session",
   "session.snapshot": "session",
   "session.archive": "session.archive",
+  "workspace.list": "workspace.follow",
+  "workspace.open": "workspace.follow",
+  "workspace.create": "workspace.create",
+  "workspace.rename": "workspace.rename",
+  "workspace.remove": "workspace.delete",
+  "workspace.archiveSession": "workspace.archive-session",
+  "session.list": "session.list",
+  "session.open": "session.open",
+  "session.create": "session.create",
+  "session.search": "session.search",
+  "session.history": "session.history",
+  "session.resume": "session.resume",
+  "session.rename": "session.rename",
+  "session.restoreArchive": "session.restore-archive",
+  "session.delete": "session.delete",
+  "session.fork": "session.fork",
+  "session.updateQueue": "session.update-queue",
+  "session.restart": "session.restart",
+  "terminal.open": "terminal.open",
+  "terminal.read": "terminal.read",
+  "terminal.list": "terminal.open",
+  "terminal.input": "terminal.send",
+  "terminal.resize": "terminal.resize",
+  "terminal.interrupt": "terminal.interrupt",
+  "terminal.close": "terminal.close",
+  "preset.catalog": "preset.catalog",
+  "preset.select": "preset.select",
+  "dynamic.host.define": "dynamic.host.define",
+  "dynamic.host.run": "dynamic.host.run",
+  "dynamic.host.update": "dynamic.host.update",
+  "dynamic.host.stop": "dynamic.host.stop",
+  "dynamic.host.undefine": "dynamic.host.undefine",
+  "dynamic.host.inventory": "dynamic.host.inventory",
+  "dynamic.host.diagnostics": "dynamic.host.diagnostics",
+  "attachment.limits": "attachment.limits",
+  "context.summary": "session.snapshot",
 });
 
-const CATALOG: readonly CapabilityDescriptor[] = Object.freeze([
+const BASE_CATALOG: readonly CapabilityDescriptor[] = [
   {
     capabilityId: "session.acquire",
     schemaRevision: 1,
@@ -63,6 +99,25 @@ const CATALOG: readonly CapabilityDescriptor[] = Object.freeze([
     stability: "stable",
     mode: "read",
   },
+];
+
+const READ_OPERATIONS = new Set([
+  "workspace.list", "workspace.open", "session.list", "session.open",
+  "session.search", "session.history", "terminal.read", "terminal.list",
+  "preset.catalog", "dynamic.host.inventory", "dynamic.host.diagnostics",
+  "attachment.limits", "context.summary",
+]);
+
+const CATALOG: readonly CapabilityDescriptor[] = Object.freeze([
+  ...BASE_CATALOG,
+  ...Object.keys(OPERATION_CAPABILITY)
+    .filter((capabilityId) => !BASE_CATALOG.some((item) => item.capabilityId === capabilityId))
+    .map((capabilityId) => ({
+      capabilityId,
+      schemaRevision: 1,
+      stability: "stable" as const,
+      mode: READ_OPERATIONS.has(capabilityId) ? "read" as const : "mutate" as const,
+    })),
 ]);
 
 /**

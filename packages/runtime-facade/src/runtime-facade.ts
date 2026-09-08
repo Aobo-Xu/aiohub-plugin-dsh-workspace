@@ -24,11 +24,16 @@ import { CapabilityDeniedError } from "./types.js";
 const RUNTIME_STATES = new Set<RuntimeState>([
   "stopped",
   "starting",
+  "loading",
   "ready",
+  "maintenance",
+  "upgrading",
+  "recovering",
   "busy",
   "stopping",
   "crashed",
   "unavailable",
+  "incompatible",
 ]);
 const SANDBOX_LEVELS = new Set<SandboxStatus["level"]>(["full", "partial"]);
 const SANDBOX_BACKENDS = new Set<SandboxStatus["backend"]>([
@@ -44,6 +49,7 @@ const LEASE_MODES = new Set<ControllerLease["mode"]>([
 
 export class SidecarRuntimeFacade implements RuntimeFacade {
   private readonly availabilityTracker = new AvailabilityTracker();
+  private runtimeRef: RuntimeRef | undefined;
 
   public constructor(private readonly transport: SidecarTransport) {}
 
@@ -51,6 +57,7 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
     const result = validateInitializeResult(
       await this.transport.request("initialize", input)
     );
+    this.runtimeRef = toRuntimeRef(result);
     this.availabilityTracker.applyNegotiation(result.capabilities);
     return result;
   }
@@ -96,6 +103,35 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
     return this.transport.request("command", { lease, command });
   }
 
+  public query<T>(command: RuntimeCommand): Promise<T> {
+    const capabilityId = commandCapabilityId(command.kind);
+    if (capabilityId === undefined) {
+      return Promise.reject(
+        new CapabilityDeniedError({
+          code: "CAPABILITY_NOT_NEGOTIATED",
+          capabilityId: command.kind,
+          retryable: false,
+          indeterminate: false,
+        })
+      );
+    }
+    const availability = this.availabilityTracker.availability(capabilityId);
+    if (!availability.available) {
+      return Promise.reject(
+        new CapabilityDeniedError({
+          code: availability.reason.code,
+          capabilityId,
+          retryable: false,
+          indeterminate: false,
+        })
+      );
+    }
+    return this.transport.request("command", {
+      ...this.requireRuntimeRef(),
+      command,
+    });
+  }
+
   public capabilities(): readonly CapabilityDescriptor[] {
     return this.availabilityTracker.capabilities();
   }
@@ -113,7 +149,11 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
     cursor?: string
   ): Promise<SessionSnapshot> {
     return validateSessionSnapshot(
-      await this.transport.request("snapshot", { sessionId, cursor })
+      await this.transport.request("snapshot", {
+        ...this.requireRuntimeRef(),
+        sessionId,
+        cursor,
+      })
     );
   }
 
@@ -149,6 +189,14 @@ export class SidecarRuntimeFacade implements RuntimeFacade {
     if (gracefulFailed) {
       throw gracefulError;
     }
+    this.runtimeRef = undefined;
+  }
+
+  private requireRuntimeRef(): RuntimeRef {
+    if (this.runtimeRef === undefined) {
+      throw new Error("DSH RuntimeFacade is not initialized.");
+    }
+    return this.runtimeRef;
   }
 }
 

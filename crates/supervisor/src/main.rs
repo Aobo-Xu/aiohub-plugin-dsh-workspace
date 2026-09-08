@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use aio_dsh_protocol::{
     AcquireSessionRequest, CURRENT_PROTOCOL_VERSION, CancelRequest, CommandAccepted,
-    CommandEnvelope, CommandPayload, ControllerLease, Envelope, InteractionDecision,
+    CommandEnvelope, CommandPayload, ControllerLease, Envelope, HostCommand, HostMutationOperation,
+    HostMutationRequest, HostReadOperation, HostReadRequest, HostResult, InteractionDecision,
     InteractionKind, InteractionRequest, InteractionResolutionReason, InteractionResolved,
     InteractionResponse, LeaseMode, NotificationEnvelope, NotificationPayload, PlatformFacts,
     PlatformKey, ResponseEnvelope, ResponsePayload, RuntimeEvent, RuntimeProvenance, RuntimeState,
@@ -41,6 +42,18 @@ struct HostBinding {
     module: PathBuf,
     patch_template: PathBuf,
     managed_patch: PathBuf,
+}
+
+/// Why one managed-Host call did not produce a result value.
+///
+/// `indeterminate` marks transport-level failures whose execution state is
+/// unknown; a definitive Host error frame leaves it false. Neither class is
+/// ever fatal for the resident: client commands surface them as structured
+/// error frames.
+struct HostCallFailure {
+    code: &'static str,
+    message: String,
+    indeterminate: bool,
 }
 
 const ENV_PLUGIN_DATA_DIR: &str = "AIO_DSH_SUPERVISOR_PLUGIN_DATA_DIR";
@@ -447,6 +460,61 @@ impl StdioDriver {
                 )?
             }
             "shutdown" => self.handle_shutdown(command.id, None)?,
+            "command" => {
+                let generation = resident_generation(&command.params, self.current_generation());
+                let parsed = if is_facade_session_command(&command.params) {
+                    resident_facade_session_command(&command.params, command.id)
+                        .map(CommandPayload::Session)
+                } else {
+                    resident_facade_command(&command.params, command.id).map(CommandPayload::Host)
+                };
+                match parsed {
+                    Ok(payload) => {
+                        self.handle_command(Envelope::new(generation, command.id, payload))?
+                    }
+                    Err(message) => CommandOutcome::frame(self.error_event_frame(
+                        command.id,
+                        format!("host-command-{}", command.id),
+                        None,
+                        self.current_generation().to_owned(),
+                        "invalid-host-params",
+                        &message,
+                    )?),
+                }
+            }
+            "acquireSession" | "transferController" | "snapshot" => {
+                let alias = match command.method.as_str() {
+                    "acquireSession" => "session.acquire",
+                    "transferController" => "session.transferController",
+                    "snapshot" => "session.snapshot",
+                    _ => unreachable!(),
+                };
+                let mut alias_params = command.params.clone();
+                if command.method == "acquireSession"
+                    && let Some(requested_mode) = command.params.get("requestedMode")
+                {
+                    alias_params["mode"] = requested_mode.clone();
+                }
+                match resident_session_command(alias, &alias_params, command.id) {
+                    Ok(session_command) => {
+                        let generation =
+                            resident_generation(&command.params, self.current_generation());
+                        self.handle_command(Envelope::new(
+                            generation,
+                            command.id,
+                            CommandPayload::Session(session_command),
+                        ))?
+                    }
+                    Err(message) => CommandOutcome::frame(self.error_event_frame(
+                        command.id,
+                        format!("host-command-{}", command.id),
+                        None,
+                        self.current_generation().to_owned(),
+                        "invalid-host-params",
+                        &message,
+                    )?),
+                }
+            }
             "session.acquire"
             | "session.submitPrompt"
             | "session.cancel"
@@ -460,6 +528,27 @@ impl StdioDriver {
                             generation,
                             command.id,
                             CommandPayload::Session(session_command),
+                        ))?
+                    }
+                    Err(message) => CommandOutcome::frame(self.error_event_frame(
+                        command.id,
+                        format!("host-command-{}", command.id),
+                        None,
+                        self.current_generation().to_owned(),
+                        "invalid-host-params",
+                        &message,
+                    )?),
+                }
+            }
+            method if is_direct_host_method(method) => {
+                match resident_host_command(method, &command.params, command.id) {
+                    Ok(host_command) => {
+                        let generation =
+                            resident_generation(&command.params, self.current_generation());
+                        self.handle_command(Envelope::new(
+                            generation,
+                            command.id,
+                            CommandPayload::Host(host_command),
                         ))?
                     }
                     Err(message) => CommandOutcome::frame(self.error_event_frame(
@@ -555,6 +644,14 @@ impl StdioDriver {
                         _ => {}
                     }
                 }
+                Some("host") => {
+                    let value = payload["data"]["value"].clone();
+                    if let Some(object) = value.as_object() {
+                        result_data.extend(object.clone());
+                    } else {
+                        result_data.insert("value".to_owned(), value);
+                    }
+                }
                 Some("interaction") => {
                     let interactions = result_data
                         .entry("interactions".to_owned())
@@ -581,6 +678,15 @@ impl StdioDriver {
             );
             if let Some(state) = state {
                 result_data.insert("state".to_owned(), json!(state));
+                result_data.insert("contractHash".to_owned(), json!(DSH_CONTRACT_HASH));
+                result_data.insert(
+                    "capabilities".to_owned(),
+                    json!(self.negotiated_capabilities.iter().collect::<Vec<_>>()),
+                );
+                result_data.insert(
+                    "sandbox".to_owned(),
+                    json!({ "level": "full", "backend": "restricted-token" }),
+                );
             }
             if result_data.len() <= 1 {
                 json!({
@@ -613,7 +719,152 @@ impl StdioDriver {
                 self.handle_shutdown(envelope.seq, envelope.correlation_id)
             }
             CommandPayload::Session(command) => self.handle_session_command(envelope, command),
+            CommandPayload::Host(command) => self.handle_host_command(envelope, command),
             CommandPayload::Interaction(response) => self.handle_interaction(envelope, response),
+        }
+    }
+
+    fn handle_host_command(
+        &mut self,
+        envelope: Envelope<CommandPayload>,
+        command: HostCommand,
+    ) -> Result<CommandOutcome, MainError> {
+        if !self.initialized {
+            return Ok(CommandOutcome::frame(self.error_event_frame(
+                envelope.seq,
+                format!("{}:error", envelope.message_id),
+                envelope.correlation_id,
+                envelope.domain_generation_id,
+                "not-initialized",
+                "initialize must complete before Host commands",
+            )?));
+        }
+        let active_generation = self.current_generation().to_owned();
+        if envelope.domain_generation_id != active_generation {
+            return Ok(CommandOutcome::frame(self.error_event_frame(
+                envelope.seq,
+                format!("{}:error", envelope.message_id),
+                envelope.correlation_id,
+                active_generation,
+                "stale-generation",
+                "Host command generation does not match the active domain",
+            )?));
+        }
+
+        let (method, capability_id) = match &command {
+            HostCommand::Read(request) => (
+                request.operation.method(),
+                host_read_capability(request.operation),
+            ),
+            HostCommand::Mutate(request) => (
+                request.operation.method(),
+                host_mutation_capability(request.operation),
+            ),
+        };
+        if !self.negotiated_capabilities.contains(capability_id) {
+            return Ok(CommandOutcome::frame(self.error_event_frame(
+                envelope.seq,
+                format!("{}:error", envelope.message_id),
+                envelope.correlation_id,
+                active_generation,
+                "capability-not-negotiated",
+                &format!("capability {capability_id} was not negotiated for this connection"),
+            )?));
+        }
+
+        match command {
+            HostCommand::Read(request) => {
+                let value = match self.host_result(method, request.input) {
+                    Ok(value) => value,
+                    Err(failure) => return self.host_failure_outcome(&envelope, failure),
+                };
+                Ok(CommandOutcome::frame(self.response_frame(
+                    &envelope,
+                    ResponsePayload::Host(HostResult {
+                        operation: method.to_owned(),
+                        value,
+                    }),
+                )?))
+            }
+            HostCommand::Mutate(request) => {
+                if host_mutation_requires_lease(request.operation) {
+                    let (Some(session_id), Some(lease_id)) =
+                        (request.session_id.as_deref(), request.lease_id.as_deref())
+                    else {
+                        return Ok(CommandOutcome::frame(self.error_event_frame(
+                            envelope.seq,
+                            format!("{}:error", envelope.message_id),
+                            envelope.correlation_id,
+                            active_generation,
+                            "invalid-host-params",
+                            &format!("{method} requires sessionId and leaseId"),
+                        )?));
+                    };
+                    if let Some(rejected) =
+                        self.validate_controller_lease(&envelope, session_id, lease_id, None)?
+                    {
+                        return Ok(rejected);
+                    }
+                }
+                if let Some(record) = self
+                    .mutation_ledger
+                    .begin(&active_generation, &request.request_id)
+                {
+                    return match record {
+                        MutationRecord::Completed(frames) => {
+                            Ok(CommandOutcome::with_frames(frames))
+                        }
+                        MutationRecord::Pending | MutationRecord::Indeterminate => {
+                            Ok(CommandOutcome::frame(self.error_event_frame(
+                                envelope.seq,
+                                format!("{}:error", envelope.message_id),
+                                envelope.correlation_id,
+                                active_generation,
+                                "request-in-flight",
+                                "a Host mutation with this requestId is already in flight",
+                            )?))
+                        }
+                    };
+                }
+                let request_id = request.request_id.clone();
+                let mut input = request.input;
+                let Some(object) = input.as_object_mut() else {
+                    // The ledger already began: settle as a definitive refusal
+                    // so the same requestId stays retryable once the client
+                    // fixes its payload.
+                    let outcome = CommandOutcome::rejected(vec![self.error_event_frame(
+                        envelope.seq,
+                        format!("{}:error", envelope.message_id),
+                        envelope.correlation_id,
+                        active_generation.clone(),
+                        "invalid-host-params",
+                        &format!("{method} input must be an object"),
+                    )?]);
+                    return self.settle_mutation(&active_generation, &request_id, outcome);
+                };
+                if let Some(session_id) = request.session_id {
+                    object.insert("sessionId".to_owned(), json!(session_id));
+                }
+                if let Some(lease_id) = request.lease_id {
+                    object.insert("leaseId".to_owned(), json!(lease_id));
+                }
+                object.insert("requestId".to_owned(), json!(request_id));
+                let value = match self.host_result(method, input) {
+                    Ok(value) => value,
+                    Err(failure) => {
+                        let outcome = self.host_failure_outcome(&envelope, failure)?;
+                        return self.settle_mutation(&active_generation, &request_id, outcome);
+                    }
+                };
+                let outcome = CommandOutcome::frame(self.response_frame(
+                    &envelope,
+                    ResponsePayload::Host(HostResult {
+                        operation: method.to_owned(),
+                        value,
+                    }),
+                )?);
+                self.settle_mutation(&active_generation, &request_id, outcome)
+            }
         }
     }
 
@@ -889,8 +1140,12 @@ impl StdioDriver {
             return Ok(rejected);
         }
         if self.host_enabled {
-            let result =
-                self.host_result("session.cancel", json!({ "sessionId": request.session_id }))?;
+            let result = match self
+                .host_result("session.cancel", json!({ "sessionId": request.session_id }))
+            {
+                Ok(result) => result,
+                Err(failure) => return self.host_failure_outcome(&envelope, failure),
+            };
             if result.get("accepted").and_then(serde_json::Value::as_bool) != Some(true) {
                 return self.reject_command(
                     &envelope,
@@ -988,8 +1243,8 @@ impl StdioDriver {
                 "the active DSH adapter does not advertise question interactions",
             );
         }
-        if self.host_enabled {
-            self.host_result(
+        if self.host_enabled
+            && let Err(failure) = self.host_result(
                 "interaction.respond",
                 json!({
                     "sessionId": response.session_id,
@@ -997,7 +1252,9 @@ impl StdioDriver {
                     "decision": host_interaction_decision(&response.decision),
                     "data": response.data,
                 }),
-            )?;
+            )
+        {
+            return self.host_failure_outcome(&envelope, failure);
         }
         self.pending_interactions.remove(&response.correlation_id);
         self.resolved_interactions
@@ -1313,16 +1570,18 @@ impl StdioDriver {
 
         if self.host_enabled {
             if !self.host_sessions.contains(&session_id) {
-                self.host_result(
+                if let Err(failure) = self.host_result(
                     "session.create",
                     json!({
                         "sessionId": session_id,
                         "cwd": workspace,
                     }),
-                )?;
+                ) {
+                    return self.host_failure_outcome(&envelope, failure);
+                }
                 self.host_sessions.insert(session_id.clone());
             }
-            let host_result = self.host_result(
+            let host_result = match self.host_result(
                 "session.submitPrompt",
                 json!({
                     "sessionId": session_id,
@@ -1330,7 +1589,10 @@ impl StdioDriver {
                     "mode": if steer { "steer" } else { "queue" },
                     "content": [{ "type": "text", "text": prompt }],
                 }),
-            )?;
+            ) {
+                Ok(value) => value,
+                Err(failure) => return self.host_failure_outcome(&envelope, failure),
+            };
             let accepted = host_result
                 .get("accepted")
                 .and_then(serde_json::Value::as_bool)
@@ -1488,24 +1750,67 @@ impl StdioDriver {
         &mut self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<serde_json::Value, MainError> {
+    ) -> Result<serde_json::Value, HostCallFailure> {
         let id = self.next_wire_error_id;
         self.next_wire_error_id = self.next_wire_error_id.saturating_add(1);
         let response = self
             .supervisor
-            .host_request(&json!({ "id": id, "method": method, "params": params }).to_string())?;
-        let value: serde_json::Value = serde_json::from_str(&response)
-            .map_err(|error| MainError::Config(format!("invalid Host response: {error}")))?;
+            .host_request(&json!({ "id": id, "method": method, "params": params }).to_string())
+            .map_err(|error| HostCallFailure {
+                code: "host-unavailable",
+                message: self
+                    .redaction
+                    .redact_text(&format!("Host {method} request failed: {error}")),
+                indeterminate: true,
+            })?;
+        let value: serde_json::Value =
+            serde_json::from_str(&response).map_err(|error| HostCallFailure {
+                code: "host-unavailable",
+                message: self
+                    .redaction
+                    .redact_text(&format!("invalid Host response: {error}")),
+                indeterminate: true,
+            })?;
         if value.get("type").and_then(serde_json::Value::as_str) != Some("result") {
-            return Err(MainError::Config(format!(
-                "Host {method} failed: {}",
-                self.redaction.redact_text(&response)
-            )));
+            return Err(HostCallFailure {
+                code: "host-operation-failed",
+                message: self
+                    .redaction
+                    .redact_text(&format!("Host {method} failed: {response}")),
+                indeterminate: false,
+            });
         }
         Ok(value
             .get("data")
             .cloned()
             .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Convert one Host call failure into the client-visible structured error.
+    ///
+    /// Definitive Host refusals settle as rejected (the mutation ledger
+    /// discards the requestId, so a retry may reuse it); transport failures
+    /// record the error outcome (the same requestId replays the error instead
+    /// of risking a second execution). The resident always stays alive: a
+    /// failed Host operation is never a fatal Supervisor error.
+    fn host_failure_outcome(
+        &self,
+        envelope: &Envelope<CommandPayload>,
+        failure: HostCallFailure,
+    ) -> Result<CommandOutcome, MainError> {
+        let frame = self.error_event_frame(
+            envelope.seq,
+            format!("{}:error", envelope.message_id),
+            envelope.correlation_id.clone(),
+            self.current_generation().to_owned(),
+            failure.code,
+            &failure.message,
+        )?;
+        Ok(if failure.indeterminate {
+            CommandOutcome::frame(frame)
+        } else {
+            CommandOutcome::rejected(vec![frame])
+        })
     }
 
     fn handle_host_snapshot(
@@ -1514,27 +1819,29 @@ impl StdioDriver {
         request: SnapshotRequest,
     ) -> Result<CommandOutcome, MainError> {
         let requested_session_id = request.session_id.clone();
-        let data = self.host_result(
+        let data = match self.host_result(
             "session.snapshot",
             json!({
                 "sessionId": request.session_id,
                 "domainGenerationId": self.current_generation(),
                 "contractHash": DSH_CONTRACT_HASH,
             }),
-        )?;
-        let snapshot = aio_dsh_protocol::SessionSnapshot {
-            domain_generation_id: required_json_string(&data, "domainGenerationId")?.to_owned(),
-            contract_hash: required_json_string(&data, "contractHash")?.to_owned(),
-            session_id: required_json_string(&data, "sessionId")?.to_owned(),
-            cursor: required_json_string(&data, "cursor")?.to_owned(),
-            seq: data
-                .get("seq")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| MainError::Config("Host snapshot omitted seq".to_owned()))?,
-            durable_facts: serde_json::from_value(data.get("durableFacts").cloned().ok_or_else(
-                || MainError::Config("Host snapshot omitted durableFacts".to_owned()),
-            )?)
-            .map_err(|error| MainError::Config(format!("invalid Host durable facts: {error}")))?,
+        ) {
+            Ok(data) => data,
+            Err(failure) => return self.host_failure_outcome(&envelope, failure),
+        };
+        let snapshot = match build_host_snapshot(&data) {
+            Ok(snapshot) => snapshot,
+            Err(message) => {
+                return Ok(CommandOutcome::frame(self.error_event_frame(
+                    envelope.seq,
+                    format!("{}:error", envelope.message_id),
+                    envelope.correlation_id.clone(),
+                    self.current_generation().to_owned(),
+                    "host-operation-failed",
+                    &message,
+                )?));
+            }
         };
         self.pending_interactions
             .retain(|_, interaction| interaction.session_id != requested_session_id);
@@ -1544,11 +1851,25 @@ impl StdioDriver {
             .and_then(serde_json::Value::as_array)
         {
             for value in interactions {
-                let correlation_id = required_json_string(value, "correlationId")?.to_owned();
+                // A malformed Host interaction entry is skipped, never fatal:
+                // the snapshot itself stays authoritative for the client.
+                let Some(correlation_id) = value
+                    .get("correlationId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
                 if self.resolved_interactions.contains(&correlation_id) {
                     continue;
                 }
-                let session_id = required_json_string(value, "sessionId")?.to_owned();
+                let Some(session_id) = value
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
                 let interaction = InteractionRequest {
                     domain_generation_id: self.current_generation().to_owned(),
                     contract_hash: DSH_CONTRACT_HASH.to_owned(),
@@ -2014,6 +2335,157 @@ fn resident_session_command(
     }
 }
 
+fn resident_facade_command(
+    params: &serde_json::Value,
+    command_id: u64,
+) -> Result<HostCommand, String> {
+    let command = params
+        .get("command")
+        .ok_or_else(|| "missing required resident Sidecar param command".to_owned())?;
+    let method = required_host_param(command, "kind")?;
+    let mut flattened = command.get("input").cloned().unwrap_or_else(|| json!({}));
+    if !flattened.is_object() {
+        return Err("command input must be an object".to_owned());
+    }
+    let target = flattened.as_object_mut().expect("checked object");
+    for name in ["requestId", "sessionId", "turnId"] {
+        if let Some(value) = command.get(name) {
+            target.insert(name.to_owned(), value.clone());
+        }
+    }
+    if let Some(lease) = params.get("lease") {
+        for name in ["sessionId", "leaseId"] {
+            if !target.contains_key(name)
+                && let Some(value) = lease.get(name)
+            {
+                target.insert(name.to_owned(), value.clone());
+            }
+        }
+    }
+    resident_host_command(&method, &flattened, command_id)
+}
+
+fn is_facade_session_command(params: &serde_json::Value) -> bool {
+    params
+        .pointer("/command/kind")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "session.submit-prompt" | "session.cancel" | "session.steer"
+            )
+        })
+}
+
+fn resident_facade_session_command(
+    params: &serde_json::Value,
+    command_id: u64,
+) -> Result<SessionCommand, String> {
+    let command = params
+        .get("command")
+        .ok_or_else(|| "missing required resident Sidecar param command".to_owned())?;
+    let kind = required_host_param(command, "kind")?;
+    let method = match kind.as_str() {
+        "session.submit-prompt" => "session.submitPrompt",
+        "session.cancel" => "session.cancel",
+        "session.steer" => "session.steer",
+        other => return Err(format!("unsupported facade session command {other}")),
+    };
+    let mut flattened = command.get("input").cloned().unwrap_or_else(|| json!({}));
+    if !flattened.is_object() {
+        return Err("command input must be an object".to_owned());
+    }
+    let target = flattened.as_object_mut().expect("checked object");
+    for name in ["requestId", "sessionId", "turnId"] {
+        if let Some(value) = command.get(name) {
+            target.insert(name.to_owned(), value.clone());
+        }
+    }
+    if let Some(lease) = params.get("lease") {
+        for name in ["sessionId", "leaseId"] {
+            if !target.contains_key(name)
+                && let Some(value) = lease.get(name)
+            {
+                target.insert(name.to_owned(), value.clone());
+            }
+        }
+    }
+    resident_session_command(method, &flattened, command_id)
+}
+
+fn resident_generation(params: &serde_json::Value, fallback: &str) -> String {
+    params
+        .get("domainGenerationId")
+        .or_else(|| params.pointer("/lease/domainGenerationId"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn resident_host_command(
+    method: &str,
+    params: &serde_json::Value,
+    _command_id: u64,
+) -> Result<HostCommand, String> {
+    if let Ok(operation) = serde_json::from_value::<HostReadOperation>(json!(method)) {
+        return Ok(HostCommand::Read(HostReadRequest {
+            operation,
+            input: params.clone(),
+        }));
+    }
+    let operation = serde_json::from_value::<HostMutationOperation>(json!(method))
+        .map_err(|_| format!("unsupported resident Sidecar method {method}"))?;
+    Ok(HostCommand::Mutate(HostMutationRequest {
+        operation,
+        request_id: required_host_param(params, "requestId")?,
+        session_id: params
+            .get("sessionId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        lease_id: params
+            .get("leaseId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        input: params.clone(),
+    }))
+}
+
+fn is_direct_host_method(method: &str) -> bool {
+    serde_json::from_value::<HostReadOperation>(json!(method)).is_ok()
+        || serde_json::from_value::<HostMutationOperation>(json!(method)).is_ok()
+}
+
+fn host_read_capability(operation: HostReadOperation) -> &'static str {
+    match operation {
+        HostReadOperation::WorkspaceList | HostReadOperation::WorkspaceOpen => "workspace.follow",
+        HostReadOperation::TerminalList => "terminal.open",
+        HostReadOperation::ContextSummary => "session.snapshot",
+        _ => operation.method(),
+    }
+}
+
+fn host_mutation_capability(operation: HostMutationOperation) -> &'static str {
+    match operation {
+        HostMutationOperation::WorkspaceRemove => "workspace.delete",
+        HostMutationOperation::WorkspaceArchiveSession => "workspace.archive-session",
+        HostMutationOperation::SessionUpdateQueue => "session.update-queue",
+        HostMutationOperation::SessionRestoreArchive => "session.restore-archive",
+        HostMutationOperation::TerminalInput => "terminal.send",
+        _ => operation.method(),
+    }
+}
+
+fn host_mutation_requires_lease(operation: HostMutationOperation) -> bool {
+    !matches!(
+        operation,
+        HostMutationOperation::WorkspaceCreate
+            | HostMutationOperation::WorkspaceRename
+            | HostMutationOperation::WorkspaceRemove
+            | HostMutationOperation::WorkspaceArchiveSession
+            | HostMutationOperation::SessionCreate
+    )
+}
+
 fn resident_interaction_response(
     params: &serde_json::Value,
     domain_generation_id: &str,
@@ -2044,6 +2516,35 @@ fn host_interaction_decision(decision: &InteractionDecision) -> &'static str {
         InteractionDecision::Timeout => "timeout",
         InteractionDecision::Answer => "answer",
     }
+}
+
+/// Parse the Host snapshot payload into the wire DTO. A malformed Host answer
+/// is a structured operation failure, never a fatal Supervisor error.
+fn build_host_snapshot(
+    data: &serde_json::Value,
+) -> Result<aio_dsh_protocol::SessionSnapshot, String> {
+    let required = |name: &str| {
+        data.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("Host snapshot omitted {name}"))
+    };
+    Ok(aio_dsh_protocol::SessionSnapshot {
+        domain_generation_id: required("domainGenerationId")?,
+        contract_hash: required("contractHash")?,
+        session_id: required("sessionId")?,
+        cursor: required("cursor")?,
+        seq: data
+            .get("seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "Host snapshot omitted seq".to_owned())?,
+        durable_facts: serde_json::from_value(
+            data.get("durableFacts")
+                .cloned()
+                .ok_or_else(|| "Host snapshot omitted durableFacts".to_owned())?,
+        )
+        .map_err(|error| format!("invalid Host durable facts: {error}"))?,
+    })
 }
 
 fn required_host_param(params: &serde_json::Value, name: &str) -> Result<String, String> {
@@ -2174,7 +2675,12 @@ fn turn_id_for_command(command: &SessionCommand) -> Option<String> {
 
 #[cfg(test)]
 mod host_runtime_patch_tests {
-    use super::headless_runtime_patch_contents;
+    use super::{
+        SessionCommand, headless_runtime_patch_contents, host_mutation_capability,
+        resident_facade_session_command, resident_host_command,
+    };
+    use aio_dsh_protocol::{HostCommand, HostMutationOperation, HostReadOperation};
+    use serde_json::json;
 
     #[test]
     fn disables_only_the_optional_session_title_provider() {
@@ -2182,5 +2688,76 @@ mod host_runtime_patch_tests {
         assert!(patch.contains("id: session-title-llm"));
         assert!(patch.contains("disabled: true"));
         assert_eq!(patch.lines().count(), 2);
+    }
+
+    #[test]
+    fn resident_host_commands_parse_only_the_typed_operation_allowlist() {
+        let read = resident_host_command("workspace.list", &json!({}), 1)
+            .expect("workspace list is a typed read");
+        assert!(matches!(
+            read,
+            HostCommand::Read(request) if request.operation == HostReadOperation::WorkspaceList
+        ));
+
+        let mutation = resident_host_command(
+            "session.restart",
+            &json!({
+                "requestId": "request-1",
+                "sessionId": "session-1",
+                "leaseId": "lease-1"
+            }),
+            2,
+        )
+        .expect("session restart is a typed mutation");
+        assert!(matches!(
+            mutation,
+            HostCommand::Mutate(request)
+                if request.operation == HostMutationOperation::SessionRestart
+                    && request.request_id == "request-1"
+        ));
+
+        assert!(resident_host_command("runtime.exec", &json!({}), 3).is_err());
+    }
+
+    #[test]
+    fn facade_session_command_maps_capability_ids_to_resident_session_methods() {
+        let command = resident_facade_session_command(
+            &json!({
+                "lease": { "sessionId": "session-1", "leaseId": "lease-1" },
+                "command": {
+                    "kind": "session.submit-prompt",
+                    "requestId": "request-1",
+                    "turnId": "turn-1",
+                    "input": { "prompt": "hello" }
+                }
+            }),
+            1,
+        )
+        .expect("facade submit maps to the typed session command");
+        assert!(matches!(command, SessionCommand::SubmitPrompt(_)));
+    }
+
+    #[test]
+    fn mutation_capability_ids_use_the_host_vocabulary() {
+        // The bridge advertises kebab-case capability ids (the facade's
+        // OPERATION_CAPABILITY vocabulary); camelCase wire kinds must never
+        // reach the capability gate or negotiated mutations fail closed by
+        // accident.
+        assert_eq!(
+            host_mutation_capability(HostMutationOperation::SessionUpdateQueue),
+            "session.update-queue"
+        );
+        assert_eq!(
+            host_mutation_capability(HostMutationOperation::SessionRestoreArchive),
+            "session.restore-archive"
+        );
+        assert_eq!(
+            host_mutation_capability(HostMutationOperation::WorkspaceRemove),
+            "workspace.delete"
+        );
+        assert_eq!(
+            host_mutation_capability(HostMutationOperation::TerminalInput),
+            "terminal.send"
+        );
     }
 }

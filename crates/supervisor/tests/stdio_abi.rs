@@ -1251,6 +1251,48 @@ fn resident_session_commands_enforce_initialization_and_lease_fencing() {
 }
 
 #[test]
+fn resident_facade_command_routes_typed_host_reads_and_rejects_stale_generation() {
+    let fixture = RuntimeFixture::new("resident-host-read-routing");
+    let mut harness = ChildHarness::spawn(&fixture);
+
+    harness.send(&resident_command(
+        1,
+        "command",
+        json!({ "command": { "kind": "workspace.list", "input": {} } }),
+    ));
+    let early = harness.recv_json();
+    assert_eq!(early["type"], json!("error"));
+    assert_eq!(early["data"]["code"], json!("not-initialized"));
+
+    harness.send(&resident_command(
+        2,
+        "initialize",
+        json!({ "hostContext": { "apiVersion": 3, "sidecarProtocolVersion": 3 } }),
+    ));
+    let initialized = harness.recv_json();
+    assert_eq!(initialized["data"]["state"], json!("ready"));
+    assert!(initialized["data"]["capabilities"].is_array());
+    assert!(initialized["data"]["contractHash"].is_string());
+
+    harness.send(&resident_command(
+        3,
+        "command",
+        json!({
+            "domainGenerationId": "stale-generation",
+            "command": { "kind": "workspace.list", "input": {} }
+        }),
+    ));
+    let stale = harness.recv_json();
+    assert_eq!(stale["type"], json!("error"));
+    assert_eq!(stale["data"]["code"], json!("stale-generation"));
+
+    harness.send(&resident_command(4, "shutdown", json!({})));
+    let stopped = harness.recv_json();
+    assert_eq!(stopped["data"]["state"], json!("stopped"));
+    assert!(harness.finish().success());
+}
+
+#[test]
 fn resident_session_retries_with_the_same_request_id_execute_the_mutation_once() {
     let fixture = RuntimeFixture::new("resident-exactly-once");
     let mut harness = ChildHarness::spawn(&fixture);
@@ -1555,5 +1597,183 @@ fn snapshot_commands_stay_available_when_only_the_session_capability_is_negotiat
         &generation,
     ));
     let _stopped = harness.recv_json();
+    assert!(harness.finish().success());
+}
+
+fn spawn_from_release_layout_with_stub_host(fixture: &RuntimeFixture) -> ChildHarness {
+    let release_root = fixture._root.path().join("installed-plugin");
+    let runtime_root = release_root.join("bin");
+    fs::create_dir_all(&runtime_root).expect("create release runtime root");
+    // The stub speaks the managed-Host JSONL protocol, so the Supervisor boots
+    // it as the long-lived Host instead of a real DSH runtime.
+    fs::copy(
+        env!("CARGO_BIN_EXE_host-test-stub"),
+        runtime_root.join("deepseek-harness-sdk-runtime-win-x64.exe"),
+    )
+    .expect("stage stub host as the runtime exe");
+    fs::write(
+        runtime_root.join("deepseek-harness-sdk-runtime-win-x64-rg.exe"),
+        b"rg",
+    )
+    .expect("stage runtime companion");
+    let host_root = release_root.join("host");
+    fs::create_dir_all(&host_root).expect("create host root");
+    fs::write(host_root.join("aio-dsh-host.mjs"), b"// stub host module\n")
+        .expect("write host module");
+    fs::write(
+        host_root.join("cordis.patch.yml"),
+        b"- insert:\n    - id: aiohub-dsh-bridge\n      name: __AIO_DSH_HOST_MODULE__\n",
+    )
+    .expect("write host patch template");
+
+    let mut scoped_lock = lock_builder();
+    let object = scoped_lock.as_object_mut().expect("runtime lock object");
+    object.remove("platforms");
+    object.insert("platform".to_owned(), json!("win32-x64"));
+    fs::write(
+        release_root.join("runtime-lock.json"),
+        serde_json::to_vec(&scoped_lock).expect("serialize scoped lock"),
+    )
+    .expect("write scoped release lock");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aio-dsh-supervisor"));
+    command
+        .current_dir(&release_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("AIOHUB_PLUGIN_DATA_DIR", &fixture.plugin_data_dir);
+
+    let mut child = command.spawn().expect("spawn installed supervisor binary");
+    let stdin = child.stdin.take().expect("capture stdin");
+    let stdout = child.stdout.take().expect("capture stdout");
+    let stderr = child.stderr.take().expect("capture stderr");
+    let (tx, rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let line = line.trim_end_matches(&['\r', '\n'][..]).to_owned();
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    std::thread::spawn(move || drain_diagnostics(stderr, stderr_tx));
+
+    ChildHarness {
+        child,
+        stdin,
+        rx,
+        stderr_rx,
+    }
+}
+
+#[test]
+fn host_operation_errors_return_structured_frames_and_keep_the_resident_alive() {
+    let fixture = RuntimeFixture::new("host-op-error");
+    let mut harness = spawn_from_release_layout_with_stub_host(&fixture);
+
+    harness.send(&resident_command(
+        1,
+        "initialize",
+        json!({ "hostContext": { "apiVersion": 3, "sidecarProtocolVersion": 3 } }),
+    ));
+    let initialized = harness.recv_json_timeout(Duration::from_secs(15));
+    assert_eq!(initialized["id"], json!(1));
+    assert_eq!(initialized["type"], json!("result"));
+    assert_eq!(initialized["data"]["state"], json!("ready"));
+    let generation = initialized["data"]["domainGenerationId"]
+        .as_str()
+        .expect("production generation")
+        .to_owned();
+
+    // The stub Host definitively refuses session.search: the failure must
+    // surface as one structured error frame instead of killing the resident.
+    harness.send(&resident_command(
+        2,
+        "command",
+        json!({
+            "domainGenerationId": generation,
+            "command": { "kind": "session.search", "input": { "query": "anything" } }
+        }),
+    ));
+    let failed = harness.recv_json();
+    assert_eq!(failed["id"], json!(2));
+    assert_eq!(failed["type"], json!("error"));
+    assert_eq!(failed["data"]["code"], json!("host-operation-failed"));
+
+    // A definitively refused mutation is retryable with the same requestId:
+    // the ledger discards the refusal instead of fencing the identity.
+    let remove = |id: u64| {
+        resident_command(
+            id,
+            "command",
+            json!({
+                "domainGenerationId": generation,
+                "command": {
+                    "kind": "workspace.remove",
+                    "requestId": "remove-1",
+                    "input": { "workspaceId": "w-1" }
+                }
+            }),
+        )
+    };
+    harness.send(&remove(3));
+    let first = harness.recv_json();
+    assert_eq!(first["type"], json!("error"));
+    assert_eq!(first["data"]["code"], json!("host-operation-failed"));
+    harness.send(&remove(4));
+    let retry = harness.recv_json();
+    assert_eq!(retry["type"], json!("error"));
+    assert_eq!(retry["data"]["code"], json!("host-operation-failed"));
+
+    // A lease-gated mutation missing sessionId/leaseId is a client parameter
+    // error: structured invalid-host-params frame, resident stays alive
+    // (defect-A class, parameter path — never a MainError exit).
+    harness.send(&resident_command(
+        5,
+        "command",
+        json!({
+            "domainGenerationId": generation,
+            "command": {
+                "kind": "session.updateQueue",
+                "requestId": "queue-1",
+                "input": { "queueMode": "append" }
+            }
+        }),
+    ));
+    let no_lease = harness.recv_json();
+    assert_eq!(no_lease["id"], json!(5));
+    assert_eq!(no_lease["type"], json!("error"));
+    assert_eq!(no_lease["data"]["code"], json!("invalid-host-params"));
+
+    // A malformed Host snapshot payload is also structured, never fatal.
+    harness.send(&resident_command(
+        6,
+        "session.snapshot",
+        json!({ "sessionId": "stub-session" }),
+    ));
+    let snapshot_error = harness.recv_json();
+    assert_eq!(snapshot_error["id"], json!(6));
+    assert_eq!(snapshot_error["type"], json!("error"));
+    assert_eq!(
+        snapshot_error["data"]["code"],
+        json!("host-operation-failed")
+    );
+
+    // The resident still serves the full lifecycle afterwards.
+    harness.send(&resident_command(7, "shutdown", json!({})));
+    let stopped = harness.recv_json();
+    assert_eq!(stopped["data"]["state"], json!("stopped"));
     assert!(harness.finish().success());
 }

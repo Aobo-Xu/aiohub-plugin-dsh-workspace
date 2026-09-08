@@ -59,6 +59,7 @@ pub enum CommandPayload {
     Ping,
     Shutdown(ShutdownRequest),
     Session(SessionCommand),
+    Host(HostCommand),
     Interaction(InteractionResponse),
 }
 
@@ -74,6 +75,7 @@ pub enum ResponsePayload {
     Pong(PongResult),
     Shutdown(ShutdownResult),
     Session(SessionResult),
+    Host(HostResult),
     Error(ProtocolError),
 }
 
@@ -545,6 +547,174 @@ pub enum SessionCommand {
     Snapshot(SnapshotRequest),
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum HostCommand {
+    Read(HostReadRequest),
+    Mutate(HostMutationRequest),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum HostReadOperation {
+    #[serde(rename = "workspace.list")]
+    WorkspaceList,
+    #[serde(rename = "workspace.open")]
+    WorkspaceOpen,
+    #[serde(rename = "session.list")]
+    SessionList,
+    #[serde(rename = "session.open")]
+    SessionOpen,
+    #[serde(rename = "session.search")]
+    SessionSearch,
+    #[serde(rename = "session.history")]
+    SessionHistory,
+    #[serde(rename = "terminal.read")]
+    TerminalRead,
+    #[serde(rename = "terminal.list")]
+    TerminalList,
+    #[serde(rename = "preset.catalog")]
+    PresetCatalog,
+    #[serde(rename = "dynamic.host.inventory")]
+    DynamicHostInventory,
+    #[serde(rename = "dynamic.host.diagnostics")]
+    DynamicHostDiagnostics,
+    #[serde(rename = "attachment.limits")]
+    AttachmentLimits,
+    #[serde(rename = "context.summary")]
+    ContextSummary,
+}
+
+impl HostReadOperation {
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::WorkspaceList => "workspace.list",
+            Self::WorkspaceOpen => "workspace.open",
+            Self::SessionList => "session.list",
+            Self::SessionOpen => "session.open",
+            Self::SessionSearch => "session.search",
+            Self::SessionHistory => "session.history",
+            Self::TerminalRead => "terminal.read",
+            Self::TerminalList => "terminal.list",
+            Self::PresetCatalog => "preset.catalog",
+            Self::DynamicHostInventory => "dynamic.host.inventory",
+            Self::DynamicHostDiagnostics => "dynamic.host.diagnostics",
+            Self::AttachmentLimits => "attachment.limits",
+            Self::ContextSummary => "context.summary",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum HostMutationOperation {
+    #[serde(rename = "workspace.create")]
+    WorkspaceCreate,
+    #[serde(rename = "workspace.rename")]
+    WorkspaceRename,
+    #[serde(rename = "workspace.remove")]
+    WorkspaceRemove,
+    #[serde(rename = "workspace.archiveSession")]
+    WorkspaceArchiveSession,
+    #[serde(rename = "session.create")]
+    SessionCreate,
+    #[serde(rename = "session.resume")]
+    SessionResume,
+    #[serde(rename = "session.rename")]
+    SessionRename,
+    #[serde(rename = "session.restoreArchive")]
+    SessionRestoreArchive,
+    #[serde(rename = "session.delete")]
+    SessionDelete,
+    #[serde(rename = "session.fork")]
+    SessionFork,
+    #[serde(rename = "session.updateQueue")]
+    SessionUpdateQueue,
+    #[serde(rename = "session.restart")]
+    SessionRestart,
+    #[serde(rename = "terminal.open")]
+    TerminalOpen,
+    #[serde(rename = "terminal.input")]
+    TerminalInput,
+    #[serde(rename = "terminal.resize")]
+    TerminalResize,
+    #[serde(rename = "terminal.interrupt")]
+    TerminalInterrupt,
+    #[serde(rename = "terminal.close")]
+    TerminalClose,
+    #[serde(rename = "preset.select")]
+    PresetSelect,
+    #[serde(rename = "dynamic.host.define")]
+    DynamicHostDefine,
+    #[serde(rename = "dynamic.host.run")]
+    DynamicHostRun,
+    #[serde(rename = "dynamic.host.update")]
+    DynamicHostUpdate,
+    #[serde(rename = "dynamic.host.stop")]
+    DynamicHostStop,
+    #[serde(rename = "dynamic.host.undefine")]
+    DynamicHostUndefine,
+}
+
+impl HostMutationOperation {
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::WorkspaceCreate => "workspace.create",
+            Self::WorkspaceRename => "workspace.rename",
+            Self::WorkspaceRemove => "workspace.remove",
+            Self::WorkspaceArchiveSession => "workspace.archiveSession",
+            Self::SessionCreate => "session.create",
+            Self::SessionResume => "session.resume",
+            Self::SessionRename => "session.rename",
+            Self::SessionRestoreArchive => "session.restoreArchive",
+            Self::SessionDelete => "session.delete",
+            Self::SessionFork => "session.fork",
+            Self::SessionUpdateQueue => "session.updateQueue",
+            Self::SessionRestart => "session.restart",
+            Self::TerminalOpen => "terminal.open",
+            Self::TerminalInput => "terminal.input",
+            Self::TerminalResize => "terminal.resize",
+            Self::TerminalInterrupt => "terminal.interrupt",
+            Self::TerminalClose => "terminal.close",
+            Self::PresetSelect => "preset.select",
+            Self::DynamicHostDefine => "dynamic.host.define",
+            Self::DynamicHostRun => "dynamic.host.run",
+            Self::DynamicHostUpdate => "dynamic.host.update",
+            Self::DynamicHostStop => "dynamic.host.stop",
+            Self::DynamicHostUndefine => "dynamic.host.undefine",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostReadRequest {
+    pub operation: HostReadOperation,
+    pub input: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostMutationRequest {
+    pub operation: HostMutationOperation,
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    pub input: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostResult {
+    pub operation: String,
+    pub value: Value,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcquireSessionRequest {
@@ -751,11 +921,16 @@ pub struct RuntimeStateNotification {
 pub enum RuntimeState {
     Stopped,
     Starting,
+    Loading,
     Ready,
+    Maintenance,
+    Upgrading,
+    Recovering,
     Busy,
     Stopping,
     Crashed,
     Unavailable,
+    Incompatible,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

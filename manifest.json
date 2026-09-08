@@ -61,7 +61,7 @@
       "name": "command",
       "description": "Execute a DSH runtime command with a valid controller lease.",
       "parameters": [
-        { "name": "lease", "type": "object", "required": true },
+        { "name": "lease", "type": "object", "required": false },
         { "name": "command", "type": "object", "required": true }
       ],
       "returnType": "Promise<object>"

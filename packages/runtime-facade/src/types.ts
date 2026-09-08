@@ -7,11 +7,16 @@ export type PlatformKey =
 export type RuntimeState =
   | "stopped"
   | "starting"
+  | "loading"
   | "ready"
+  | "maintenance"
+  | "upgrading"
+  | "recovering"
   | "busy"
   | "stopping"
   | "crashed"
-  | "unavailable";
+  | "unavailable"
+  | "incompatible";
 
 export type SandboxStatus = {
   level: "full" | "partial";
@@ -184,6 +189,7 @@ export interface RuntimeFacade {
   acquireSession(input: AcquireSessionInput): Promise<ControllerLease>;
   transferController(input: TransferControllerInput): Promise<ControllerLease>;
   command<T>(lease: ControllerLease, command: RuntimeCommand): Promise<T>;
+  query<T>(command: RuntimeCommand): Promise<T>;
   capabilities(): readonly CapabilityDescriptor[];
   availability(capabilityId: string): OperationAvailability;
   snapshot(sessionId: string, cursor?: string): Promise<SessionSnapshot>;

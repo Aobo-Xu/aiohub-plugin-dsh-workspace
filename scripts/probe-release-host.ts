@@ -62,7 +62,24 @@ const initialized = await send("initialize", {
 });
 console.log("INITIALIZE", JSON.stringify(initialized));
 if (initialized.type !== "result") throw new Error("initialize failed");
-const lease = await send("session.acquire", { sessionId: "probe-session", viewId: "probe", mode: "controller" });
+const generation = initialized.data.domainGenerationId;
+const workspaces = await send("command", {
+  domainGenerationId: generation,
+  command: { kind: "workspace.list", input: {} },
+});
+console.log("WORKSPACES", JSON.stringify(workspaces));
+const attachmentLimits = await send("command", {
+  domainGenerationId: generation,
+  command: { kind: "attachment.limits", input: {} },
+});
+console.log("ATTACHMENT_LIMITS", JSON.stringify(attachmentLimits));
+const lease = await send("acquireSession", {
+  domainGenerationId: generation,
+  contractHash: initialized.data.contractHash,
+  sessionId: "probe-session",
+  viewId: "probe",
+  requestedMode: "controller",
+});
 console.log("LEASE", JSON.stringify(lease));
 const leaseId = lease.data.lease.leaseId;
 const submit = await send("session.submitPrompt", {
@@ -78,6 +95,14 @@ for (let i = 0; i < 80; i++) {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
 }
 console.log("SNAPSHOT", JSON.stringify(snapshot));
+const summary = await send("command", {
+  domainGenerationId: generation,
+  command: {
+    kind: "context.summary",
+    input: { workspaceId: "probe-workspace", sessionId: "probe-session", maxChars: 512 },
+  },
+});
+console.log("SUMMARY", JSON.stringify(summary));
 const cancelled = await send("session.cancel", { sessionId: "probe-session", leaseId, turnId: "probe-turn" });
 console.log("CANCEL", JSON.stringify(cancelled));
 const stopped = await send("shutdown", { reason: "probe" });
@@ -87,3 +112,6 @@ await new Promise<void>((resolvePromise) => child.once("exit", () => resolveProm
 server.close();
 if (requests.length !== 1) throw new Error(`expected one provider request, got ${requests.length}`);
 if (snapshot?.type !== "result" || snapshot.data?.snapshot?.cursor === undefined) throw new Error("snapshot did not contain a cursor");
+if (workspaces?.type !== "result" || !Array.isArray(workspaces.data?.items)) throw new Error("workspace.list was not production reachable");
+if (attachmentLimits?.data?.maxCount !== 8) throw new Error("attachment limits were not advertised");
+if (summary?.type !== "result" || summary.data?.provenance?.source !== "dsh") throw new Error("context summary was not production reachable");

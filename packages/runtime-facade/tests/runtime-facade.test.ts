@@ -168,9 +168,20 @@ describe("SidecarRuntimeFacade validation and lifecycle", () => {
   );
 
   it("rejects a malformed snapshot", async () => {
-    const facade = new SidecarRuntimeFacade(
-      createTransport({ ...runtimeRef, sessionId: "session-1", cursor: "cursor-1", seq: 1 })
-    );
+    const transport = createTransport(initializeResult);
+    transport.request.mockResolvedValueOnce(initializeResult).mockResolvedValueOnce({
+      ...runtimeRef,
+      sessionId: "session-1",
+      cursor: "cursor-1",
+      seq: 1,
+    });
+    const facade = new SidecarRuntimeFacade(transport);
+    await facade.initialize({
+      hostApiVersion: 3,
+      platform: "win32-x64",
+      pluginDataDir: "C:/dsh",
+      prewarm: false,
+    });
 
     await expect(facade.snapshot("session-1")).rejects.toThrow(
       "Invalid session snapshot"
@@ -359,6 +370,25 @@ describe("capability availability and typed commands", () => {
     expect(transport.request).toHaveBeenCalledWith("command", {
       lease: controllerLease,
       command: { kind: "session.custom", input: {} },
+    });
+  });
+
+  it("routes capability-gated read operations through the production command method", async () => {
+    const transport = createTransport({ items: [] });
+    transport.request.mockResolvedValueOnce({
+      ...negotiatedInitializeResult,
+      state: "maintenance",
+      capabilities: ["execution-domain:dsh", "workspace.follow"],
+    });
+    const facade = new SidecarRuntimeFacade(transport);
+    await negotiate(facade);
+
+    await expect(
+      facade.query({ kind: "workspace.list", input: {} })
+    ).resolves.toEqual({ items: [] });
+    expect(transport.request).toHaveBeenLastCalledWith("command", {
+      ...runtimeRef,
+      command: { kind: "workspace.list", input: {} },
     });
   });
 });

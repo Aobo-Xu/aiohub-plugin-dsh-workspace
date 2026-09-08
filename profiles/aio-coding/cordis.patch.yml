@@ -12,6 +12,16 @@
 - id: headless-runner
   disabled: true
 
+# Full-text session search is opt-in upstream: the base composition ships the
+# session-query index with `openAt: never`, so every search call fails with
+# SESSION_QUERY_SEARCH_DISABLED.  The managed workstation enables lazy search
+# with a durable index inside the managed DSH Home — the override path the
+# runtime itself documents for deployments that need content search.
+- id: session-query-sqlite
+  config:
+    openAt: first-search
+    path: !!js dshHomePath('session-query-index.sqlite')
+
 # Public Host controllers used by the release adapter.  These are official DSH
 # extension points; the AIO bridge does not import Web BFF or private registry
 # modules.

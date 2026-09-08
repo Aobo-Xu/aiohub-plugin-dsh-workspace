@@ -12,6 +12,11 @@ path = "src/lib.rs"
 name = "aio-dsh-supervisor"
 path = "src/main.rs"
 
+# Test-only stub of the DSH Host JSONL surface; never packaged into releases.
+[[bin]]
+name = "host-test-stub"
+path = "src/bin/host-test-stub.rs"
+
 [dependencies]
 aio-dsh-protocol = { path = "../protocol" }
 serde = { version = "=1.0.228", features = ["derive"] }

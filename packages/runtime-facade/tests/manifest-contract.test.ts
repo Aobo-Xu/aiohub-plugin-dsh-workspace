@@ -83,9 +83,10 @@ describe("DSH manifest contract", () => {
       ).toEqual(parameterNames);
       for (const parameter of method.parameters) {
         expect(parameter.type).toEqual(expect.any(String));
-        const isOptionalCursor =
-          name === "snapshot" && parameter.name === "cursor";
-        expect(parameter.required ?? true).toBe(!isOptionalCursor);
+        const isOptional =
+          (name === "snapshot" && parameter.name === "cursor") ||
+          (name === "command" && parameter.name === "lease");
+        expect(parameter.required ?? true).toBe(!isOptional);
       }
     }
   });
