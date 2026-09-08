@@ -62,3 +62,16 @@ export {
   CapabilityUnavailableError,
 } from "./adapters/rc1.js";
 export type { Rc1RuntimeSurface } from "./adapters/rc1.js";
+
+export {
+  createAlpha2Adapter,
+  registerAlpha2Adapter,
+  ALPHA2_ADAPTER_ID,
+  ALPHA2_SCHEMA_VERSION,
+  ALPHA2_SERVICE_EVIDENCE,
+} from "./adapters/alpha2.js";
+export type {
+  Alpha2AdapterOptions,
+  Alpha2CompatibilitySnapshot,
+  Alpha2RuntimeSurface,
+} from "./adapters/alpha2.js";

@@ -15,6 +15,14 @@ export type AdapterIdentity = {
   releaseCommit: string;
   schemaVersion: number;
   serviceEvidence: readonly string[];
+  /**
+   * Executable-runtime evidence is provenance, never adapter-selection input.
+   * Source/API compatibility fixtures must stay visibly pending when an
+   * official runtime artifact is unavailable.
+   */
+  executableValidation?:
+    | { status: "passed"; artifactSha256: string }
+    | { status: "pending"; reason: "official-wheel-unavailable" };
 };
 
 /**
