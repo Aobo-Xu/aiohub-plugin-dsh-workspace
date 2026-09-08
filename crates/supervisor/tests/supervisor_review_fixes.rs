@@ -240,6 +240,7 @@ fn long_running_process() -> SpawnSpec {
                 "127.0.0.1".into(),
             ],
             current_dir: None,
+            env: Default::default(),
         }
     }
 
@@ -249,6 +250,7 @@ fn long_running_process() -> SpawnSpec {
             program: "sh".into(),
             args: vec!["-c".into(), "sleep 10".into()],
             current_dir: None,
+            env: Default::default(),
         }
     }
 
@@ -258,6 +260,7 @@ fn long_running_process() -> SpawnSpec {
             program: "unsupported".into(),
             args: Vec::new(),
             current_dir: None,
+            env: Default::default(),
         }
     }
 }

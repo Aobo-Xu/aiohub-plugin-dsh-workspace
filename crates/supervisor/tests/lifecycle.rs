@@ -164,3 +164,81 @@ fn shutdown_disposes_running_generation_and_becomes_unavailable() {
     assert_eq!(lifecycle.state(), LifecycleState::Unavailable);
     assert!(lifecycle.apply(LifecycleEvent::DemandStart).is_empty());
 }
+
+#[test]
+fn maintenance_and_upgrade_states_fence_mutations_until_ready_again() {
+    let mut lifecycle = LifecycleMachine::new(Duration::from_secs(1));
+    lifecycle.apply(LifecycleEvent::DemandStart);
+    lifecycle.apply(LifecycleEvent::DshQuiescent {
+        jobs: 0,
+        interactions: 0,
+    });
+
+    assert!(lifecycle.mutations_allowed());
+    lifecycle.apply(LifecycleEvent::EnterMaintenance);
+    assert_eq!(lifecycle.state(), LifecycleState::Maintenance);
+    assert!(!lifecycle.mutations_allowed());
+
+    lifecycle.apply(LifecycleEvent::BeginUpgrade);
+    assert_eq!(lifecycle.state(), LifecycleState::Upgrading);
+    assert!(!lifecycle.mutations_allowed());
+
+    lifecycle.apply(LifecycleEvent::BeginRecovery);
+    assert_eq!(lifecycle.state(), LifecycleState::Recovering);
+    assert!(!lifecycle.mutations_allowed());
+
+    lifecycle.apply(LifecycleEvent::DshQuiescent {
+        jobs: 0,
+        interactions: 0,
+    });
+    assert_eq!(lifecycle.state(), LifecycleState::Ready);
+    assert!(lifecycle.mutations_allowed());
+}
+
+#[test]
+fn incompatible_is_terminal_for_mutations_until_an_explicit_new_generation() {
+    let mut lifecycle = LifecycleMachine::new(Duration::from_secs(1));
+    lifecycle.apply(LifecycleEvent::DemandStart);
+    lifecycle.apply(LifecycleEvent::MarkIncompatible);
+
+    assert_eq!(lifecycle.state(), LifecycleState::Incompatible);
+    assert!(!lifecycle.mutations_allowed());
+    assert!(lifecycle.apply(LifecycleEvent::DemandStart).is_empty());
+}
+
+#[test]
+fn crash_interrupts_every_generation_bound_handle_without_replay_effects() {
+    let mut lifecycle = LifecycleMachine::new(Duration::from_secs(1));
+    lifecycle.apply(LifecycleEvent::DemandStart);
+    lifecycle.apply(LifecycleEvent::DshBusy);
+    lifecycle.apply(LifecycleEvent::HandleStarted {
+        handle_id: "turn-1".to_owned(),
+    });
+    lifecycle.apply(LifecycleEvent::HandleStarted {
+        handle_id: "terminal-1".to_owned(),
+    });
+
+    let effects = lifecycle.apply(LifecycleEvent::ChildExited { active_turn: None });
+
+    assert_eq!(lifecycle.state(), LifecycleState::Crashed);
+    assert_eq!(
+        effects,
+        vec![
+            LifecycleEffect::MarkInterrupted {
+                turn_id: "turn-1".to_owned(),
+            },
+            LifecycleEffect::MarkInterrupted {
+                turn_id: "terminal-1".to_owned(),
+            },
+            LifecycleEffect::ScheduleRestart {
+                after: Duration::from_millis(100),
+            },
+        ]
+    );
+    assert!(lifecycle.active_handles().is_empty());
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, LifecycleEffect::Spawn))
+    );
+}

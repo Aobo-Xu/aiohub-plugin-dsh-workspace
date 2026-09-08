@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ impl Default for HomeMode {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct DshHomeLayout {
     data: PathBuf,
     data_dir: PathBuf,
@@ -63,8 +66,36 @@ impl DshHomeLayout {
         &self.data_dir
     }
 
+    pub fn root(&self) -> &Path {
+        &self.data
+    }
+
     pub fn credentials_dir(&self) -> &Path {
         &self.credentials_dir
+    }
+
+    pub fn apply_environment(&self, environment: &mut BTreeMap<String, OsString>) {
+        environment.insert("DSH_HOME".to_owned(), self.data.as_os_str().to_owned());
+        environment.insert("DSH_TELEMETRY_DISABLED".to_owned(), OsString::from("1"));
+    }
+
+    pub fn backup_to(&self, destination: &Path) -> Result<(), HomeError> {
+        let source = self.data.canonicalize()?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| HomeError::UnsupportedEntry(destination.to_owned()))?;
+        let destination = destination
+            .parent()
+            .ok_or_else(|| HomeError::UnsupportedEntry(destination.to_owned()))?
+            .canonicalize()?
+            .join(destination_name);
+        if destination.starts_with(&source) {
+            return Err(HomeError::BackupInsideHome(destination));
+        }
+        if destination.exists() {
+            return Err(HomeError::BackupExists(destination.to_owned()));
+        }
+        copy_managed_tree(&source, &destination)
     }
 
     pub fn secret_file(&self, name: &str) -> Result<PathBuf, HomeError> {
@@ -111,8 +142,36 @@ impl DshHomeLayout {
 pub enum HomeError {
     #[error("unsafe secret file name: {0}")]
     UnsafeName(String),
+    #[error("managed home backup destination already exists: {0}")]
+    BackupExists(PathBuf),
+    #[error("managed home backup destination must be outside the live home: {0}")]
+    BackupInsideHome(PathBuf),
+    #[error("managed home backup refuses symbolic links or special files: {0}")]
+    UnsupportedEntry(PathBuf),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+fn copy_managed_tree(source: &Path, destination: &Path) -> Result<(), HomeError> {
+    fs::create_dir(destination)?;
+    apply_directory_mode(destination, HomeMode::default().directory)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(HomeError::UnsupportedEntry(source_path));
+        }
+        if file_type.is_dir() {
+            copy_managed_tree(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path)?;
+        } else {
+            return Err(HomeError::UnsupportedEntry(source_path));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

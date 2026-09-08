@@ -12,6 +12,10 @@ pub enum LifecycleState {
     Stopping,
     Crashed,
     Unavailable,
+    Upgrading,
+    Recovering,
+    Maintenance,
+    Incompatible,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +27,12 @@ pub enum LifecycleEvent {
     DshBusy,
     DshQuiescent { jobs: usize, interactions: usize },
     ChildExited { active_turn: Option<String> },
+    HandleStarted { handle_id: String },
+    HandleFinished { handle_id: String },
+    EnterMaintenance,
+    BeginUpgrade,
+    BeginRecovery,
+    MarkIncompatible,
     IdleGraceElapsed,
     Shutdown,
 }
@@ -50,6 +60,7 @@ pub struct LifecycleMachine {
     process_generation_prefix: String,
     domain_generation_id: Option<String>,
     interactions: Vec<String>,
+    active_handles: Vec<String>,
     recovery: Recovery,
     quiescent: bool,
 }
@@ -69,6 +80,7 @@ impl LifecycleMachine {
             process_generation_prefix: format!("{}-{marker}", std::process::id()),
             domain_generation_id: None,
             interactions: Vec::new(),
+            active_handles: Vec::new(),
             recovery: Recovery::new(),
             quiescent: false,
         }
@@ -85,6 +97,18 @@ impl LifecycleMachine {
                 self.mark_quiescent(jobs, interactions)
             }
             LifecycleEvent::ChildExited { active_turn } => self.child_exited(active_turn),
+            LifecycleEvent::HandleStarted { handle_id } => {
+                self.track_handle(handle_id);
+                Vec::new()
+            }
+            LifecycleEvent::HandleFinished { handle_id } => {
+                self.finish_handle(&handle_id);
+                Vec::new()
+            }
+            LifecycleEvent::EnterMaintenance => self.enter_maintenance(),
+            LifecycleEvent::BeginUpgrade => self.begin_upgrade(),
+            LifecycleEvent::BeginRecovery => self.begin_recovery(),
+            LifecycleEvent::MarkIncompatible => self.mark_incompatible(),
             LifecycleEvent::IdleGraceElapsed => self.idle_grace_elapsed(),
             LifecycleEvent::Shutdown => self.shutdown(),
         };
@@ -116,6 +140,14 @@ impl LifecycleMachine {
         self.idle_grace
     }
 
+    pub fn mutations_allowed(&self) -> bool {
+        matches!(self.state, LifecycleState::Ready | LifecycleState::Busy)
+    }
+
+    pub fn active_handles(&self) -> &[String] {
+        &self.active_handles
+    }
+
     fn start(&mut self, prewarm: bool) -> Vec<LifecycleEffect> {
         if prewarm {
             self.lease.acquire();
@@ -133,6 +165,10 @@ impl LifecycleMachine {
                 vec![LifecycleEffect::Spawn]
             }
             LifecycleState::Unavailable
+            | LifecycleState::Upgrading
+            | LifecycleState::Recovering
+            | LifecycleState::Maintenance
+            | LifecycleState::Incompatible
             | LifecycleState::Starting
             | LifecycleState::Ready
             | LifecycleState::Busy
@@ -181,17 +217,25 @@ impl LifecycleMachine {
                 vec![LifecycleEffect::PublishReady]
             }
             LifecycleState::Ready => Vec::new(),
+            LifecycleState::Recovering => {
+                self.state = LifecycleState::Ready;
+                self.recovery.reset();
+                vec![LifecycleEffect::PublishReady]
+            }
             LifecycleState::Stopped
             | LifecycleState::Stopping
             | LifecycleState::Crashed
-            | LifecycleState::Unavailable => Vec::new(),
+            | LifecycleState::Unavailable
+            | LifecycleState::Upgrading
+            | LifecycleState::Maintenance
+            | LifecycleState::Incompatible => Vec::new(),
         }
     }
 
     fn child_exited(&mut self, active_turn: Option<String>) -> Vec<LifecycleEffect> {
         if matches!(
             self.state,
-            LifecycleState::Stopped | LifecycleState::Unavailable
+            LifecycleState::Stopped | LifecycleState::Unavailable | LifecycleState::Incompatible
         ) {
             return Vec::new();
         }
@@ -200,14 +244,64 @@ impl LifecycleMachine {
         self.quiescent = false;
         self.interactions.clear();
 
-        let mut effects = Vec::new();
-        if let Some(turn_id) = active_turn {
-            effects.push(LifecycleEffect::MarkInterrupted { turn_id });
+        if let Some(turn_id) = active_turn
+            && !self.active_handles.contains(&turn_id)
+        {
+            self.active_handles.push(turn_id);
         }
+        let mut effects = self
+            .active_handles
+            .drain(..)
+            .map(|turn_id| LifecycleEffect::MarkInterrupted { turn_id })
+            .collect::<Vec<_>>();
         effects.push(LifecycleEffect::ScheduleRestart {
             after: self.recovery.next_restart_delay(),
         });
         effects
+    }
+
+    fn track_handle(&mut self, handle_id: String) {
+        if self.mutations_allowed() && !self.active_handles.contains(&handle_id) {
+            self.active_handles.push(handle_id);
+        }
+    }
+
+    fn finish_handle(&mut self, handle_id: &str) {
+        self.active_handles.retain(|active| active != handle_id);
+    }
+
+    fn enter_maintenance(&mut self) -> Vec<LifecycleEffect> {
+        if matches!(self.state, LifecycleState::Ready | LifecycleState::Busy) {
+            self.state = LifecycleState::Maintenance;
+        }
+        Vec::new()
+    }
+
+    fn begin_upgrade(&mut self) -> Vec<LifecycleEffect> {
+        if matches!(
+            self.state,
+            LifecycleState::Ready | LifecycleState::Maintenance
+        ) {
+            self.state = LifecycleState::Upgrading;
+        }
+        Vec::new()
+    }
+
+    fn begin_recovery(&mut self) -> Vec<LifecycleEffect> {
+        if matches!(
+            self.state,
+            LifecycleState::Crashed | LifecycleState::Maintenance | LifecycleState::Upgrading
+        ) {
+            self.state = LifecycleState::Recovering;
+        }
+        Vec::new()
+    }
+
+    fn mark_incompatible(&mut self) -> Vec<LifecycleEffect> {
+        if self.state != LifecycleState::Unavailable {
+            self.state = LifecycleState::Incompatible;
+        }
+        Vec::new()
     }
 
     fn idle_grace_elapsed(&mut self) -> Vec<LifecycleEffect> {
@@ -233,6 +327,7 @@ impl LifecycleMachine {
         self.state = LifecycleState::Unavailable;
         self.domain_generation_id = None;
         self.interactions.clear();
+        self.active_handles.clear();
         self.quiescent = false;
         self.lease = Lease::default();
 

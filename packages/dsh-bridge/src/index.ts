@@ -52,6 +52,12 @@ export { createAdapterRegistry } from "./adapters/registry.js";
 
 export type { DshHost, HostPortName } from "./host/create-host.js";
 export { createDshHost } from "./host/create-host.js";
+export type {
+  CreateRuntimeHostOptions,
+  RuntimeHost,
+  RuntimeHostState,
+} from "./host/runtime-host.js";
+export { createRuntimeHost } from "./host/runtime-host.js";
 
 export {
   createRc1Adapter,

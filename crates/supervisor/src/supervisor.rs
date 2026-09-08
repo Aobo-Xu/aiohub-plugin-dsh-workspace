@@ -240,6 +240,9 @@ impl Supervisor {
 
     pub fn startup_transaction(&self, flags: &StartupFlags) -> Result<(), SupervisorError> {
         let mut state = self.lock_state()?;
+        if matches!(state.owner, SupervisorOwner::Ready | SupervisorOwner::Busy) {
+            return Ok(());
+        }
         state.owner = SupervisorOwner::Starting;
 
         match self.execute_startup_transaction(flags, &mut state) {
@@ -278,7 +281,8 @@ impl Supervisor {
         }
 
         let mut child = None;
-        if let Some(spec) = flags.child.clone() {
+        if let Some(mut spec) = flags.child.clone() {
+            home.apply_environment(&mut spec.env);
             child = Some(self.backend.spawn(spec)?);
         }
 
@@ -319,6 +323,23 @@ impl Supervisor {
         }
         if let Some(home) = state.home.take() {
             home.remove()?;
+        }
+        state.owner = SupervisorOwner::Stopped;
+        Ok(())
+    }
+
+    pub fn host_process_id(&self) -> Option<u32> {
+        self.lock_state()
+            .ok()
+            .and_then(|state| state.child.as_ref().map(ManagedProcess::id))
+    }
+
+    pub fn shutdown(&self) -> Result<(), SupervisorError> {
+        let mut state = self.lock_state()?;
+        state.owner = SupervisorOwner::Stopping;
+        if let Some(mut child) = state.child.take() {
+            self.backend
+                .terminate_tree(&mut child, ProcessPolicy::default().terminate_grace)?;
         }
         state.owner = SupervisorOwner::Stopped;
         Ok(())

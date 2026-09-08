@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -25,6 +27,7 @@ pub struct SpawnSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub current_dir: Option<PathBuf>,
+    pub env: BTreeMap<String, OsString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +184,7 @@ impl ProcessBackend {
         if let Some(current_dir) = spec.current_dir {
             command.current_dir(current_dir);
         }
+        command.envs(spec.env);
         command.process_group(0);
 
         let child = command.spawn()?;
@@ -197,8 +201,8 @@ impl ProcessBackend {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         use windows_sys::Win32::System::Threading::{
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, PROCESS_INFORMATION, ResumeThread,
-            STARTUPINFOW, TerminateProcess,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+            PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess,
         };
 
         let command_line = windows_command_line(&spec);
@@ -207,6 +211,7 @@ impl ProcessBackend {
             .current_dir
             .as_ref()
             .map(|path| path.as_os_str().encode_wide().chain(Some(0)).collect());
+        let environment = windows_environment_block(&spec.env);
 
         let startup_info = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
@@ -214,7 +219,7 @@ impl ProcessBackend {
         };
 
         let mut process_info = PROCESS_INFORMATION::default();
-        let creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
+        let creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
         let result = unsafe {
             CreateProcessW(
                 std::ptr::null(),
@@ -223,7 +228,7 @@ impl ProcessBackend {
                 std::ptr::null(),
                 0,
                 creation_flags,
-                std::ptr::null(),
+                environment.as_ptr().cast(),
                 current_dir_utf16
                     .as_ref()
                     .map(|value| value.as_ptr())
@@ -268,6 +273,33 @@ impl ProcessBackend {
             }),
         })
     }
+}
+
+#[cfg(windows)]
+fn windows_environment_block(overrides: &BTreeMap<String, OsString>) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut environment = std::env::vars_os().collect::<Vec<_>>();
+    for (key, value) in overrides {
+        environment.retain(|(existing, _)| !existing.to_string_lossy().eq_ignore_ascii_case(key));
+        environment.push((OsString::from(key), value.clone()));
+    }
+
+    environment.sort_by(|left, right| {
+        left.0
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .cmp(&right.0.to_string_lossy().to_ascii_uppercase())
+    });
+    let mut block = Vec::new();
+    for (key, value) in environment {
+        block.extend(key.encode_wide());
+        block.push('=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 #[cfg(windows)]
