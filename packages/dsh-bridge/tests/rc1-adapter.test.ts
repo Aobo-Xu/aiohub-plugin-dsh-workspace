@@ -66,11 +66,14 @@ describe("rc1 adapter identity and probe", () => {
       const capabilityIds = settled.capabilities.map((descriptor) => descriptor.capabilityId);
       expect(new Set(capabilityIds).size).toBe(capabilityIds.length);
       expect(capabilityIds).toContain("workspace.create");
+      expect(capabilityIds).toContain("workspace.delete");
       expect(capabilityIds).toContain("session.create");
       expect(capabilityIds).toContain("session.snapshot");
       expect(capabilityIds).toContain("session.history");
       expect(capabilityIds).toContain("session.submit-prompt");
       expect(capabilityIds).toContain("session.cancel");
+      expect(capabilityIds).not.toContain("session.rename");
+      expect(capabilityIds).toContain("session.update-queue");
       expect(capabilityIds).toContain("interaction.approval");
       expect(capabilityIds).toContain("terminal.open");
       await adapter.dispose();
@@ -89,13 +92,21 @@ describe("rc1 adapter through the host composition root", () => {
       const workspaces = host.port("workspaces");
       expect(workspaces.operationAvailability("workspace.create")).toEqual({ available: true });
 
-      const created = await (workspaces as unknown as {
+      const ops = workspaces as unknown as {
         create(input: { path: string }): Promise<{ workspaceId: string; path: string; created: boolean }>;
-      }).create({ path: cwd });
+        rename(input: { workspaceId: string; title: string }): Promise<{ workspaceId: string; title: string }>;
+        delete(input: { workspaceId: string }): Promise<{ deleted: true }>;
+      };
+      const created = await ops.create({ path: cwd });
 
       expect(created.created).toBe(true);
       expect(created.path).toBe(cwd);
       expect(created.workspaceId.length).toBeGreaterThan(0);
+      await expect(ops.rename({ workspaceId: created.workspaceId, title: "Renamed" })).resolves.toMatchObject({
+        workspaceId: created.workspaceId,
+        title: "Renamed",
+      });
+      await expect(ops.delete({ workspaceId: created.workspaceId })).resolves.toEqual({ deleted: true });
       await adapter.dispose();
     });
   });

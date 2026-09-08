@@ -78,6 +78,7 @@ export class CapabilityUnavailableError extends Error {
  */
 export type Rc1RuntimeSurface = {
   ctx: {
+    get?(service: string): unknown;
     /** Cordis context event registration (the `approval/request` waterfall listens here). */
     on(event: "approval/request", listener: () => Promise<"allowed-once" | "rejected">): () => void;
     sessionController: {
@@ -98,9 +99,19 @@ export type Rc1RuntimeSurface = {
       prompt(request: { requestId: string; sessionId: string; mode: "queue" | "steer"; content: ReadonlyArray<{ type: "text"; text: string } | { type: "image"; mediaType: string; data: string; name?: string }> }, signal: AbortSignal): Promise<{ accepted: true }>;
       cancel(request: { sessionId: string }): { accepted: true };
       list(request: Record<string, never>, signal: AbortSignal): Promise<{ items: ReadonlyArray<{ sessionId: string; updatedAt: number; running: boolean; blank: boolean }> }>;
+      search?(request: { query: string }, signal: AbortSignal): Promise<{ items: ReadonlyArray<unknown>; hasMore: boolean }>;
+      resolveAgent?(sessionId: string): Promise<unknown>;
+      rename?(request: { sessionId: string; title: string }): Promise<{ title: string; seq: number }>;
+      fork?(request: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }>;
+      updateQueue?(request: { sessionId: string; itemId: string; action: unknown }): { accepted: true };
+      selectModel?(request: { sessionId: string; provider: string; model: string }): Promise<unknown>;
     };
     workspaceController: {
       follow(signal: AbortSignal): AsyncIterable<unknown>;
+      create?(request: { path: string }): Promise<{ workspace: { workspaceId: string; path: string; title: string }; created: boolean }>;
+      rename?(request: { workspaceId: string; title: string }): Promise<{ workspace: { workspaceId: string; path: string; title: string } }>;
+      delete?(request: { workspaceId: string }): Promise<{ deleted: true }>;
+      archiveSession?(request: { sessionId: string }): Promise<{ archivedSessionIds: readonly string[] }>;
     };
     typertGateway: {
       invoke(request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }): Promise<unknown>;
@@ -129,11 +140,9 @@ type Rc1AdapterOptions = {
 };
 
 /** Capability vocabulary proved from the rc.1 public service settlement. */
-function rc1Capabilities(schemaRevision: number): CapabilityDescriptor[] {
-  return [
-    capability("workspace.create", schemaRevision, "mutate"),
+function rc1Capabilities(runtime: Rc1RuntimeSurface, schemaRevision: number): CapabilityDescriptor[] {
+  const capabilities = [
     capability("workspace.follow", schemaRevision, "observe"),
-    capability("session.create", schemaRevision, "mutate"),
     capability("session.open", schemaRevision, "read"),
     capability("session.snapshot", schemaRevision, "read"),
     capability("session.history", schemaRevision, "read"),
@@ -147,6 +156,23 @@ function rc1Capabilities(schemaRevision: number): CapabilityDescriptor[] {
     capability("terminal.send", schemaRevision, "mutate"),
     capability("terminal.close", schemaRevision, "mutate"),
   ];
+  const optional: Array<[boolean, string, CapabilityDescriptor["mode"]]> = [
+    [typeof runtime.ctx.workspaceController.create === "function", "workspace.create", "mutate"],
+    [typeof runtime.ctx.workspaceController.rename === "function", "workspace.rename", "mutate"],
+    [typeof runtime.ctx.workspaceController.delete === "function", "workspace.delete", "mutate"],
+    [typeof runtime.ctx.workspaceController.archiveSession === "function", "workspace.archive-session", "mutate"],
+    [typeof runtime.ctx.sessionController.create === "function", "session.create", "mutate"],
+    [typeof runtime.ctx.sessionController.search === "function", "session.search", "read"],
+    [typeof runtime.ctx.sessionController.resolveAgent === "function", "session.resume", "mutate"],
+    [typeof runtime.ctx.sessionController.rename === "function" && runtime.ctx.get?.("sessionTitle") !== undefined, "session.rename", "mutate"],
+    [typeof runtime.ctx.sessionController.fork === "function", "session.fork", "mutate"],
+    [typeof runtime.ctx.sessionController.updateQueue === "function", "session.update-queue", "mutate"],
+    [typeof runtime.ctx.sessionController.selectModel === "function", "session.select-model", "mutate"],
+  ];
+  for (const [available, id, mode] of optional) {
+    if (available) capabilities.push(capability(id, schemaRevision, mode));
+  }
+  return capabilities;
 }
 
 function requireAvailable(capabilities: readonly CapabilityDescriptor[], operationId: string): void {
@@ -217,27 +243,37 @@ export function createRc1Adapter(options: Rc1AdapterOptions): DshReleaseAdapter 
     ...basePort("workspace.create"),
     async create(input: { path: string }): Promise<{ workspaceId: string; path: string; title: string; created: boolean }> {
       requireAvailable(requireSettled(), "workspace.create");
-      const value = (await runtime.ctx.typertGateway.invoke({
-        namespace: "workspace",
-        method: "create",
-        args: { request: { path: input.path } },
-      })) as { workspace: { workspaceId: string; path: string; title: string }; created: boolean };
+      const value = await runtime.ctx.workspaceController.create!({ path: input.path });
       return { ...value.workspace, created: value.created };
     },
     async follow(): Promise<AsyncIterable<unknown>> {
       requireAvailable(requireSettled(), "workspace.follow");
       return runtime.ctx.workspaceController.follow(new AbortController().signal);
     },
+    async rename(input: { workspaceId: string; title: string }): Promise<{ workspaceId: string; path: string; title: string }> {
+      requireAvailable(requireSettled(), "workspace.rename");
+      const value = await runtime.ctx.workspaceController.rename!(input);
+      return value.workspace;
+    },
+    async delete(input: { workspaceId: string }): Promise<{ deleted: true }> {
+      requireAvailable(requireSettled(), "workspace.delete");
+      return runtime.ctx.workspaceController.delete!(input);
+    },
+    async archiveSession(input: { sessionId: string }): Promise<{ archivedSessionIds: readonly string[] }> {
+      requireAvailable(requireSettled(), "workspace.archive-session");
+      return runtime.ctx.workspaceController.archiveSession!(input);
+    },
   };
 
   const sessions = {
     ...basePort("session.create"),
-    async create(input: { cwd?: string; workspaceId?: string; sessionId?: string }): Promise<{ sessionId: string; agentPreset?: string }> {
+    async create(input: { cwd?: string; workspaceId?: string; sessionId?: string; agentPreset?: string }): Promise<{ sessionId: string; agentPreset?: string }> {
       requireAvailable(requireSettled(), "session.create");
       return runtime.ctx.sessionController.create({
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        ...(input.agentPreset === undefined ? {} : { agentPreset: input.agentPreset }),
       });
     },
     async open(input: { sessionId: string }): Promise<{
@@ -277,7 +313,7 @@ export function createRc1Adapter(options: Rc1AdapterOptions): DshReleaseAdapter 
         projections: first.value.projections,
       };
     },
-    async history(input: { sessionId: string; throughSeq: number; beforeSeq?: number; maxMessages?: number }): Promise<{
+    async history(input: { sessionId: string; throughSeq: number; beforeSeq?: number; maxMessages?: number }, signal = new AbortController().signal): Promise<{
       records: ReadonlyArray<ReturnType<typeof mapHistoryRecord>>;
       hasMore: boolean;
     }> {
@@ -289,7 +325,7 @@ export function createRc1Adapter(options: Rc1AdapterOptions): DshReleaseAdapter 
           ...(input.beforeSeq === undefined ? {} : { beforeSeq: input.beforeSeq }),
           ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
         },
-        new AbortController().signal,
+        signal,
       );
       return { records: page.records.map((record) => mapHistoryRecord(record as { type: string })), hasMore: page.hasMore };
     },
@@ -326,6 +362,30 @@ export function createRc1Adapter(options: Rc1AdapterOptions): DshReleaseAdapter 
       requireAvailable(requireSettled(), "session.list");
       const value = await runtime.ctx.sessionController.list({}, new AbortController().signal);
       return value.items;
+    },
+    async search(input: { query: string }, signal = new AbortController().signal): Promise<{ items: ReadonlyArray<unknown>; hasMore: boolean }> {
+      requireAvailable(requireSettled(), "session.search");
+      return runtime.ctx.sessionController.search!(input, signal);
+    },
+    async resume(input: { sessionId: string }): Promise<unknown> {
+      requireAvailable(requireSettled(), "session.resume");
+      return runtime.ctx.sessionController.resolveAgent!(input.sessionId);
+    },
+    async rename(input: { sessionId: string; title: string }): Promise<{ title: string; seq: number }> {
+      requireAvailable(requireSettled(), "session.rename");
+      return runtime.ctx.sessionController.rename!(input);
+    },
+    async fork(input: { sessionId: string; atSeq?: number }): Promise<{ sessionId: string }> {
+      requireAvailable(requireSettled(), "session.fork");
+      return runtime.ctx.sessionController.fork!(input);
+    },
+    async updateQueue(input: { sessionId: string; itemId: string; action: unknown }): Promise<{ accepted: true }> {
+      requireAvailable(requireSettled(), "session.update-queue");
+      return runtime.ctx.sessionController.updateQueue!(input);
+    },
+    async selectModel(input: { sessionId: string; provider: string; model: string }): Promise<unknown> {
+      requireAvailable(requireSettled(), "session.select-model");
+      return runtime.ctx.sessionController.selectModel!(input);
     },
   };
 
@@ -434,7 +494,7 @@ export function createRc1Adapter(options: Rc1AdapterOptions): DshReleaseAdapter 
         ok,
         schemaVersion: RC1_SCHEMA_VERSION,
         services,
-        capabilities: ok ? rc1Capabilities(RC1_SCHEMA_VERSION) : [],
+        capabilities: ok ? rc1Capabilities(runtime, RC1_SCHEMA_VERSION) : [],
       };
     },
     async settle(): Promise<NegotiatedCapabilities> {

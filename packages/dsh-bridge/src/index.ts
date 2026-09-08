@@ -10,6 +10,9 @@ export {
 export type { RequiredServiceName } from "./public-services.js";
 
 export { createSessionService } from "./sessions.js";
+export { createSessionControlService } from "./sessions/session-service.js";
+export { createSessionSearchService } from "./sessions/search-service.js";
+export { createWorkspaceService } from "./workspaces/workspace-service.js";
 export { createControllerLeaseService } from "./controller-leases.js";
 export { createInteractionService } from "./interactions.js";
 export { createEventService } from "./events.js";

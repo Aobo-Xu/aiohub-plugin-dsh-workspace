@@ -7,11 +7,13 @@ import type {
 
 export class BridgeCommandError extends Error {
   public readonly code: string;
+  public readonly capabilityId?: string;
 
-  public constructor(code: string) {
+  public constructor(code: string, capabilityId?: string) {
     super(code);
     this.name = "BridgeCommandError";
     this.code = code;
+    this.capabilityId = capabilityId;
   }
 }
 
@@ -108,6 +110,9 @@ function getOrCreateState(
 ): LeaseState {
   const existing = sessions.get(input.sessionId);
   if (existing) {
+    if (existing.contractHash !== input.contractHash) {
+      throw new BridgeCommandError("CONTRACT_HASH_MISMATCH");
+    }
     if (existing.domainGenerationId !== input.domainGenerationId) {
       existing.domainGenerationId = input.domainGenerationId;
       existing.controller = undefined;

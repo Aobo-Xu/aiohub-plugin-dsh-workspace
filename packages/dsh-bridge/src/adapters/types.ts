@@ -56,8 +56,32 @@ export interface AdapterPort {
   operationAvailability(operationId: string): OperationAvailability;
 }
 
-export type WorkspacePort = AdapterPort;
-export type SessionPort = AdapterPort;
+export type WorkspacePort = AdapterPort & {
+  follow?(signal: AbortSignal): AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>;
+  create?(input: { path: string }): Promise<unknown>;
+  rename?(input: { workspaceId: string; title: string }): Promise<unknown>;
+  delete?(input: { workspaceId: string }): Promise<unknown>;
+  archiveSession?(input: { sessionId: string }): Promise<unknown>;
+};
+export type SessionPort = AdapterPort & {
+  create?(input: Record<string, unknown>): Promise<unknown>;
+  open?(input: { sessionId: string }): Promise<unknown>;
+  snapshot?(input: { sessionId: string }): Promise<unknown>;
+  history?(input: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+  subscribe?(input: { sessionId: string }): Promise<unknown>;
+  submitPrompt?(input: Record<string, unknown>): Promise<unknown>;
+  cancel?(input: { sessionId: string }): Promise<unknown>;
+  list?(): Promise<unknown>;
+  search?(input: { query: string }, signal?: AbortSignal): Promise<unknown>;
+  resume?(input: { sessionId: string }): Promise<unknown>;
+  rename?(input: { sessionId: string; title: string }): Promise<unknown>;
+  fork?(input: { sessionId: string; atSeq?: number }): Promise<unknown>;
+  updateQueue?(input: Record<string, unknown>): Promise<unknown>;
+  selectModel?(input: Record<string, unknown>): Promise<unknown>;
+  delete?(input: { sessionId: string }): Promise<unknown>;
+  restoreArchive?(input: { sessionId: string }): Promise<unknown>;
+  restart?(input: { sessionId: string }): Promise<unknown>;
+};
 export type ProjectionPort = AdapterPort;
 export type InteractionPort = AdapterPort;
 export type ArtifactPort = AdapterPort;

@@ -35,10 +35,14 @@ export function createSessionService(options: SessionServiceOptions) {
 
   return {
     async command(lease: ControllerLease, command: SessionCommandInput) {
-      assertMutable(lease);
-
       if (!isSessionCommandKind(command.kind)) {
         throw new BridgeCommandError("UNKNOWN_SESSION_COMMAND");
+      }
+
+      // Reads may be issued by an observer. All other verbs remain fenced by
+      // the controller lease before the adapter is touched.
+      if (!READ_SESSION_COMMAND_KINDS.has(command.kind)) {
+        assertMutable(lease);
       }
 
       return session[command.kind](command.input);
@@ -64,4 +68,10 @@ const SESSION_COMMAND_KINDS = new Set<SessionCommandKind>([
   "rename",
   "model",
   "workspace",
+]);
+
+const READ_SESSION_COMMAND_KINDS = new Set<SessionCommandKind>([
+  "list",
+  "search",
+  "history",
 ]);

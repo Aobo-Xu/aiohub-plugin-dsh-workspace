@@ -62,6 +62,24 @@ describe("controller lease fencing", () => {
       expect.objectContaining({ code: "STALE_GENERATION" }),
     );
   });
+
+  it("rejects a lease with a different contract hash in the same generation", async () => {
+    const leases = createControllerLeaseService();
+    const controller = await leases.acquire(acquireInput("view-a", "controller"));
+    expect(() => leases.assertMutable({
+      ...controller,
+      contractHash: "different-contract",
+    })).toThrowError(expect.objectContaining({ code: "CONTRACT_HASH_MISMATCH" }));
+  });
+
+  it("does not issue a lease when the runtime contract changes in place", async () => {
+    const leases = createControllerLeaseService();
+    await leases.acquire(acquireInput("view-a", "controller"));
+    await expect(leases.acquire({
+      ...acquireInput("view-b", "observer"),
+      contractHash: "different-contract",
+    })).rejects.toMatchObject({ code: "CONTRACT_HASH_MISMATCH" });
+  });
 });
 
 describe("session command map", () => {
@@ -135,5 +153,26 @@ describe("session command map", () => {
     await expect(
       service.command(observer, { kind: "create", input: {} }),
     ).rejects.toMatchObject({ code: "OBSERVER_MUTATION" });
+  });
+
+  it("allows observer read commands without acquiring mutation control", async () => {
+    const calls: string[] = [];
+    const observer = await createControllerLeaseService().acquire(acquireInput("view-b", "observer"));
+    const service = createSessionService({
+      session: Object.fromEntries(
+        ["list", "search", "history"].map((kind) => [kind, async () => {
+          calls.push(kind);
+          return { kind };
+        }]),
+      ) as never,
+      assertMutable: () => {
+        throw new Error("observer read must not assert mutation");
+      },
+    });
+
+    await service.command(observer, { kind: "list", input: {} });
+    await service.command(observer, { kind: "search", input: {} });
+    await service.command(observer, { kind: "history", input: {} });
+    expect(calls).toEqual(["list", "search", "history"]);
   });
 });
