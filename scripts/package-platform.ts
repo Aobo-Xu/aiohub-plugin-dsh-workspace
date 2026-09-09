@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -111,6 +111,46 @@ export async function packagePlatform(
     throw new Error(`PACKAGE_HOST_MISSING: ${hostBundlePath} or ${hostPatchPath}`);
   }
 
+  const manifestUi = (
+    manifest as ReleaseManifest & { ui?: { component?: string; icon?: string } }
+  ).ui;
+  const uiEntries: string[] = [];
+  const uiClosure: { path: string; sha256: string; executable: boolean }[] = [];
+  if (manifestUi?.component) {
+    const stagedUiPaths: string[] = [manifestUi.component];
+    const componentSource = join(options.root, manifestUi.component);
+    try {
+      for (const file of await readdir(dirname(componentSource))) {
+        if (file.endsWith(".css")) {
+          stagedUiPaths.push(`${dirname(manifestUi.component)}/${file}`);
+        }
+      }
+    } catch {
+      await rm(staging, { recursive: true, force: true });
+      throw new Error(`PACKAGE_UI_MISSING: ${componentSource}`);
+    }
+    if (manifestUi.icon) {
+      stagedUiPaths.push(manifestUi.icon);
+    }
+    for (const relativePath of stagedUiPaths) {
+      const source = join(options.root, relativePath);
+      const destination = join(staging, relativePath);
+      await mkdir(dirname(destination), { recursive: true });
+      try {
+        await copyFile(source, destination);
+      } catch {
+        await rm(staging, { recursive: true, force: true });
+        throw new Error(`PACKAGE_UI_MISSING: ${source}`);
+      }
+      uiEntries.push(relativePath);
+      uiClosure.push({
+        path: relativePath,
+        sha256: await sha256File(destination),
+        executable: false,
+      });
+    }
+  }
+
   const releaseLock = {
     ...lock,
     releaseClosure: [
@@ -129,6 +169,7 @@ export async function packagePlatform(
         sha256: await sha256File(hostPatchDestination),
         executable: false,
       },
+      ...uiClosure,
       ...runtime.files,
     ],
   };
@@ -155,6 +196,7 @@ export async function packagePlatform(
     manifest.sidecar.executable[runtime.platform],
     "host/aio-dsh-host.mjs",
     "host/cordis.patch.yml",
+    ...uiEntries,
     ...runtime.files.map((file) => file.path),
   ];
   const archive = spawnSync("tar", ["-a", "-cf", output, ...entries], {

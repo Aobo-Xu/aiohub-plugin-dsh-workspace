@@ -99,6 +99,11 @@
       }
     }
   },
+  "ui": {
+    "displayName": "Coding工作站",
+    "icon": "assets/icon.svg",
+    "component": "ui/dist/index.js"
+  },
   "contributions": [
     {
       "type": "capability",

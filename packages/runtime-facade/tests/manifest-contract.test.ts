@@ -22,14 +22,22 @@ describe("DSH manifest contract", () => {
     );
   });
 
-  it("keeps the resident runtime boundary UI-neutral and package paths stable", async () => {
+  it("keeps resident runtime package paths stable and confines UI to the plugin ESM surface", async () => {
     const manifest = JSON.parse(
       await readFile(new URL("../../../manifest.json", import.meta.url), "utf8")
     );
 
     expect(manifest.sidecar.resident).toBe(true);
-    expect(manifest).not.toHaveProperty("ui");
+    // The workstation delta spec requires the plugin-owned AIO-native ESM Vue
+    // surface; only mounting the DSH Web UI (webUi) stays prohibited, and the
+    // resident runtime boundary below must not reference it.
+    expect(manifest.ui).toEqual({
+      displayName: "Coding工作站",
+      icon: "assets/icon.svg",
+      component: "ui/dist/index.js",
+    });
     expect(manifest).not.toHaveProperty("webUi");
+    expect(JSON.stringify(manifest.sidecar)).not.toContain("ui/dist");
     expect(Object.keys(manifest.settingsSchema.properties).sort()).toEqual([
       "idleGraceSeconds",
       "prewarm",

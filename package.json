@@ -9,7 +9,8 @@
     "node": "22.19.0"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "ui"
   ],
   "scripts": {
     "check": "bun run check:types && bun run check:generated-types && bun run check:generated && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
@@ -21,8 +22,11 @@
     "build:protocol": "bun run generate:protocol && cargo build -p aio-dsh-protocol --release",
     "generate:protocol": "cargo run -p aio-dsh-protocol --bin generate --",
     "check:generated": "cargo run -p aio-dsh-protocol --bin generate -- --check",
+    "check:ui": "vue-tsc --project ui/tsconfig.json",
+    "test:ui": "vitest run ui/tests",
+    "build:ui": "vite build ui",
     "runtime:resolve-current": "node --experimental-strip-types scripts/runtime/resolve-runtime.ts",
-    "package:platform": "bun run build:host && node --experimental-strip-types scripts/package-platform.ts --support supported",
+    "package:platform": "bun run build:host && bun run build:ui && node --experimental-strip-types scripts/package-platform.ts --support supported",
     "runtime:acquire-wheel": "node --experimental-strip-types scripts/runtime/acquire-official-wheel.ts"
   },
   "devDependencies": {
