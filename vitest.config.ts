@@ -14,6 +14,15 @@ export default defineConfig({
         find: /^aiohub-ui$/,
         replacement: fileURLToPath(new URL("./ui/tests/stubs/aiohub-ui.ts", import.meta.url)),
       },
+      {
+        // This worktree lives inside the AIO repository tree, so a bare "vue"
+        // import that misses the local store walks up into the host repo's
+        // node_modules and produces a second Vue runtime (renderSlot crashes
+        // with a null current instance across the two copies). Pin the single
+        // copy declared by the ui workspace.
+        find: /^vue$/,
+        replacement: fileURLToPath(new URL("./ui/node_modules/vue", import.meta.url)),
+      },
     ],
   },
   test: {

@@ -4,12 +4,16 @@
  * actually consumes is declared here.
  */
 declare module "aiohub-sdk" {
+  import type { Ref } from "vue";
   export const pluginManager: {
     getActivePlugin(pluginId: string): unknown;
   };
   export const pluginConfigService: {
     getValue<T>(pluginId: string, key: string): Promise<T | undefined>;
     setValue(pluginId: string, key: string, value: unknown): Promise<void>;
+  };
+  export function useLlmProfiles(): {
+    enabledProfiles: Ref<readonly unknown[]>;
   };
 }
 
