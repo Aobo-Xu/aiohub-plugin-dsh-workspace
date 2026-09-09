@@ -22,7 +22,10 @@ defineEmits<{ open: [session: SessionSummary] }>();
     class="ws-session-row"
     :data-session-id="session.id"
     :aria-current="active === true ? 'true' : undefined"
+    tabindex="0"
+    role="button"
     @click="$emit('open', session)"
+    @keydown.enter="$emit('open', session)"
   >
     <span class="ws-row-title">{{ session.title }}</span>
     <span
@@ -51,6 +54,10 @@ defineEmits<{ open: [session: SessionSummary] }>();
 }
 .ws-session-row:hover {
   background: var(--fill-color-light, rgba(0, 0, 0, 0.04));
+}
+.ws-session-row:focus-visible {
+  outline: 2px solid var(--color-primary, #409eff);
+  outline-offset: -2px;
 }
 .ws-row-title {
   flex: 1;

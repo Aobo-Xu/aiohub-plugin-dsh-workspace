@@ -241,4 +241,16 @@ function closeOverlayAndRestore(): void {
   border-right: none;
   border-left: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
 }
+.ws-shell :deep(button:focus-visible),
+.ws-shell :deep([tabindex]:focus-visible) {
+  outline: 2px solid var(--color-primary, #409eff);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-shell *,
+  .ws-overlay {
+    transition: none !important;
+    animation: none !important;
+  }
+}
 </style>

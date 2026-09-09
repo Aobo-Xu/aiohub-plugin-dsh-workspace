@@ -1,4 +1,5 @@
 import { boundedText, maskSecrets } from "../presenters/registry";
+import { maskSensitiveText } from "../shared/masking";
 
 export type SourceAnchor = {
   kind: string;
@@ -43,16 +44,10 @@ export type ContextCapsule = {
 
 const PART_BOUND = 4000;
 const NEARBY_LIMIT = 3;
-const CREDENTIAL_ASSIGNMENT =
-  /(api[_-]?key|token|secret|password|authorization|cookie|credential)(\s*[=:]\s*)(["'])?[^"';,\s]+/gi;
 
 function maskText(text: string): { text: string; masked: boolean } {
-  let masked = false;
-  const replaced = text.replace(CREDENTIAL_ASSIGNMENT, (_match, key: string, sep: string, quote?: string) => {
-    masked = true;
-    return `${key}${sep}${quote ?? ""}[masked]`;
-  });
-  return { text: replaced, masked };
+  const masked = maskSensitiveText(text);
+  return { text: masked, masked: masked !== text };
 }
 
 function makePart(id: string, kind: string, raw: string): { part: CapsulePart; masked: boolean } {
