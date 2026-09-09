@@ -43,7 +43,9 @@ const COMPLETED_TURN: readonly RuntimeEvent[] = [
 
 function setScrollMetrics(element: Element, metrics: { scrollHeight: number; scrollTop: number; clientHeight: number }) {
   for (const [key, value] of Object.entries(metrics)) {
-    Object.defineProperty(element, key, { configurable: true, value });
+    // writable: the component assigns scrollTop when following the tail,
+    // mirroring real browser behavior.
+    Object.defineProperty(element, key, { configurable: true, writable: true, value });
   }
   element.dispatchEvent(new Event("scroll"));
 }
