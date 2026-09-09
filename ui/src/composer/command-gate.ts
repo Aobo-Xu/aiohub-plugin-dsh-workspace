@@ -1,7 +1,7 @@
-import type { ControllerLease } from "@aiohub/dsh-runtime-facade/types";
+import type { ControllerLease, OperationAvailability, RuntimeState } from "@aiohub/dsh-runtime-facade/types";
 
 export type GateContext = {
-  runtimeState: string;
+  runtimeState: RuntimeState | "unknown";
   leaseMode?: "controller" | "observer";
   transferPending?: boolean;
   generationStale?: boolean;
@@ -9,7 +9,7 @@ export type GateContext = {
   turnActive: boolean;
   /** Host-advertised preference for the default busy-submit action. */
   busySubmitPreference?: "queue" | "steer";
-  availability: (capabilityId: string) => { available: boolean; reason?: { code?: string } };
+  availability: (capabilityId: string) => OperationAvailability;
 };
 
 export type AttachmentDraft = { id: string; mediaType: string; bytes: number };
@@ -63,17 +63,15 @@ export type CommandGateDeps = {
   attachmentLimits: () => AttachmentLimits;
 };
 
+// Operation kinds exactly as keyed in the facade OPERATION_CAPABILITY map:
+// the same string is the availability input and the dispatched command kind.
 const CAPABILITY_BY_ACTION: Readonly<Record<SubmitAction, string>> = {
   submit: "session.submit-prompt",
-  queue: "session.update-queue",
-  steer: "session.steer",
-};
-
-const KIND_BY_ACTION: Readonly<Record<SubmitAction, string>> = {
-  submit: "session.submitPrompt",
   queue: "session.updateQueue",
   steer: "session.steer",
 };
+
+const KIND_BY_ACTION: Readonly<Record<SubmitAction, string>> = CAPABILITY_BY_ACTION;
 
 const ACTIONABLE_STATES: ReadonlySet<string> = new Set(["ready", "busy"]);
 const STALE_CODES: ReadonlySet<string> = new Set(["stale-lease", "stale-generation", "unknown-lease"]);

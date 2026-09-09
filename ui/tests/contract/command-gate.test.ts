@@ -5,7 +5,7 @@ import { buildNotification } from "../../src/interactions/notification-adapter";
 
 const ALL_CAPS = [
   "session.submit-prompt",
-  "session.update-queue",
+  "session.updateQueue",
   "session.steer",
   "session.cancel",
   "session.restart",
@@ -66,7 +66,7 @@ describe("command gate submit semantics", () => {
     expect(outcome.ok).toBe(true);
     if (outcome.ok) expect(outcome.action).toBe("submit");
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]).toMatchObject({ kind: "session.submitPrompt", requestId: "req-1" });
+    expect(dispatched[0]).toMatchObject({ kind: "session.submit-prompt", requestId: "req-1" });
   });
 
   it("honors the Host busy-submit preference and defaults to Queue otherwise", async () => {
@@ -95,7 +95,7 @@ describe("command gate submit semantics", () => {
     const onlyQueue = harness({
       turnActive: true,
       availability: (capabilityId) =>
-        capabilityId === "session.update-queue" || capabilityId === "session.submit-prompt"
+        capabilityId === "session.updateQueue" || capabilityId === "session.submit-prompt"
           ? { available: true }
           : { available: false },
     });
